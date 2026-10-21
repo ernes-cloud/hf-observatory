@@ -98,3 +98,20 @@ def test_pick_history_daily_then_weekly():
     assert majors[-10:] == list(range(51, 61))
     assert all((60 - m) % 7 == 0 for m in majors[:-10])
     assert len(pick_history(versions, 10, 5)) == 5
+
+
+def test_graveyard(built):
+    g = json.loads((built / "graveyard.json").read_text())
+    assert g["totals"]["removed"] == 1
+    assert g["models"]["rows"][0][0] == "gone/old-model"
+    assert g["totals"]["gated_share_removed"] == 1
+
+
+def test_family_trees(built):
+    idx = json.loads((built / "families" / "index.json").read_text())
+    top = idx["bases"][0]
+    assert top["id"] == "Qwen/Qwen3-8B"
+    assert top["direct"] == 2
+    assert top["by_relation"]["finetune"] == 1 and top["by_relation"]["quantized"] == 1
+    tree = json.loads((built / "families" / f"tree-{top['tree']}.json").read_text())
+    assert {c["i"] for c in tree["tree"]["c"]} == {"someone/my-assistant", "quant/Qwen3-8B-GGUF"}

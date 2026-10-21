@@ -139,6 +139,18 @@ npm run screenshots                       # refresh docs/screenshots/
 * Family trees use the Hub tags `base_model:<relation>:<parent>`; models that only declare `base_model` count as
   “other derivatives”. Parents are matched case-insensitively and only live models are counted as derivatives.
   Very large families are trimmed in the tree (top 120 children of the base, top 25 below that, 4 generations).
+* Advisor GPU-server formats follow the architecture: Blackwell (RTX 50, RTX PRO 6000 Blackwell, B200, DGX Spark,
+  Jetson Thor) → BF16 / FP8 / **NVFP4**; Hopper, Ada and AMD CDNA3 → BF16 / FP8 / AWQ-GPTQ; Ampere, Turing and others →
+  BF16 / INT8 / AWQ-GPTQ; gpt-oss always runs its native MXFP4. The card links the exact repository to download (the
+  NVFP4 / FP8 / AWQ / GGUF / MLX build), with the original model as the title. FP8 falls back to on-the-fly
+  quantization (`--quantization fp8`) when no FP8 build is tracked.
+* Speculative decoding: drafts are found from their tags and base model (DFlash2, DFlash, DSpark, EAGLE-3), and MTP
+  from the model's own tags/architecture or an MTP-preserving GGUF. vLLM gets `--speculative-config` (`dflash`, `eagle3`
+  or the family's MTP method), SGLang `--speculative-algorithm DFLASH | DSPARK | EAGLE3 | NEXTN`, llama.cpp
+  `--spec-type draft-mtp` or a DFlash2 GGUF draft (`-hfd`, needs a build with DFlash2). Speed-ups (1.5–2.3× for one
+  user, less when serving many) are estimates; acceptance rates vary by prompt.
+* vLLM, SGLang, Ollama, llama.cpp and Text Embeddings Inference commands are also given as Docker Compose files
+  (NVIDIA GPU reservation, ROCm images and `/dev/kfd` for AMD, a note for ARM64 machines such as DGX Spark).
 * The advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
   ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size) + 0.5 GB; usable memory is the VRAM minus
   ~0.8 GB, or about 67–75% of a Mac's unified memory. GGUF/MLX builds are only linked when their repository name

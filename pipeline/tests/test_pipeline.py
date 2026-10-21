@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
+
+os.environ["HFO_OFFLINE"] = "1"  # tests never call the Hugging Face Hub
 import sys
 from pathlib import Path
 
@@ -191,3 +194,50 @@ def test_architecture_tags_drive_kv_factor_and_moe():
     assert kv_factor({"llama"}) is None
     assert MOE_ARCH_RX.match("glm5_next") and MOE_ARCH_RX.match("kimi_k25") and not MOE_ARCH_RX.match("qwen3")
     assert CANONICAL_GGUF["openai/gpt-oss-120b"] == "ggml-org/gpt-oss-120b-GGUF"
+
+
+def test_config_summaries_of_real_architectures():
+    from hfo.hfconfig import summarize
+    # Llama-3.1-8B: 32 layers x 8 KV heads x 128 dims x K+V x 2 bytes = 128 KiB per token
+    llama = summarize({"num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8, "hidden_size": 4096,
+                       "max_position_embeddings": 131072, "rope_scaling": {"factor": 8.0, "original_max_position_embeddings": 8192}})
+    assert llama["kvb"] == 131072 and llama["mc"] == 131072 and "idle" not in llama
+    # DeepSeek-V3 (MLA): (512 + 64) x 2 bytes x 61 layers; 37B of 671B active
+    ds = summarize({"num_hidden_layers": 61, "num_attention_heads": 128, "num_key_value_heads": 128, "hidden_size": 7168,
+                    "kv_lora_rank": 512, "qk_rope_head_dim": 64, "n_routed_experts": 256, "num_experts_per_tok": 8,
+                    "moe_intermediate_size": 2048, "first_k_dense_replace": 3, "max_position_embeddings": 163840})
+    assert ds["kvb"] == 576 * 2 * 61
+    assert 630 < ds["idle"] < 640  # 671B - idle ~ 37B active
+    # Qwen3-30B-A3B: 3.3B active of 30.5B
+    q = summarize({"num_hidden_layers": 48, "num_attention_heads": 32, "num_key_value_heads": 4, "head_dim": 128, "hidden_size": 2048,
+                   "num_experts": 128, "num_experts_per_tok": 8, "moe_intermediate_size": 768, "decoder_sparse_step": 1,
+                   "max_position_embeddings": 40960})
+    assert abs((30.5 - q["idle"]) - 3.3) < 0.2 and q["kvb"] == 48 * 2 * 4 * 128 * 2
+    # gpt-oss-120b: half the layers use a 128-token sliding window
+    g = summarize({"num_hidden_layers": 36, "num_attention_heads": 64, "num_key_value_heads": 8, "head_dim": 64, "hidden_size": 2880,
+                   "layer_types": ["sliding_attention", "full_attention"] * 18, "sliding_window": 128,
+                   "num_local_experts": 128, "experts_per_token": 4, "num_experts_per_tok": 4, "intermediate_size": 2880,
+                   "max_position_embeddings": 131072})
+    assert g["kvb"] == 18 * 2 * 8 * 64 * 2 and g["kvs"] == g["kvb"] and g["win"] == 128
+    # Qwen3-Next / Qwen3.5 hybrid: one full-attention layer in four, nested text_config for the VL version
+    n = summarize({"text_config": {"num_hidden_layers": 48, "num_attention_heads": 16, "num_key_value_heads": 2, "head_dim": 256,
+                                   "hidden_size": 2048, "full_attention_interval": 4, "max_position_embeddings": 262144}})
+    assert n["kvb"] == 12 * 2 * 2 * 256 * 2 and n["mc"] == 262144
+    # Gemma 3 (older config): 1 global layer in 6, 1024-token window elsewhere
+    gm = summarize({"num_hidden_layers": 62, "num_attention_heads": 32, "num_key_value_heads": 16, "head_dim": 128, "hidden_size": 5376,
+                    "sliding_window": 1024, "sliding_window_pattern": 6, "max_position_embeddings": 131072})
+    assert gm["kvb"] == 10 * 2 * 16 * 128 * 2 and gm["kvs"] == 52 * 2 * 16 * 128 * 2 and gm["win"] == 1024
+    # Nemotron-H hybrid Mamba: only "*" layers attend
+    nh = summarize({"num_hidden_layers": 4, "num_attention_heads": 8, "num_key_value_heads": 2, "head_dim": 128, "hidden_size": 1024,
+                    "hybrid_override_pattern": "M-*-"})
+    assert nh["kvb"] == 1 * 2 * 2 * 128 * 2
+    assert summarize({"architectures": ["Whatever"]}) is None
+
+
+def test_configs_cache_offline(tmp_path, monkeypatch):
+    import json as _json
+    from hfo.hfconfig import load_configs
+    (tmp_path / "configs.json").write_text(_json.dumps({"a/b": {"t": 1, "kvb": 1000, "mc": 4096}, "c/d": {"t": 1, "err": 401}}))
+    monkeypatch.setenv("HFO_OFFLINE", "1")
+    got = load_configs(["a/b", "c/d", "e/f"], tmp_path)
+    assert got == {"a/b": {"t": 1, "kvb": 1000, "mc": 4096}}

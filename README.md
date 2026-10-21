@@ -152,7 +152,16 @@ npm run screenshots                       # refresh docs/screenshots/
   user, less when serving many) are estimates; acceptance rates vary by prompt.
 * vLLM, SGLang, Ollama, llama.cpp and Text Embeddings Inference commands are also given as Docker Compose files
   (NVIDIA GPU reservation, ROCm images and `/dev/kfd` for AMD, a note for ARM64 machines such as DGX Spark).
-* The advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
+* **Model architecture from `config.json`.** The pipeline reads each advisor model's `config.json` from the Hub
+  (cached in `pipeline/.cache/snapshots/configs.json`, failures retried weekly; set `HF_TOKEN` to include gated
+  models, `HFO_OFFLINE=1` to skip). From it come the exact KV-cache bytes per token (layers × KV heads × head size,
+  MLA latents, sliding-window and linear-attention layers), the longest context the model supports (the advisor
+  never sizes or launches a model beyond it) and the active size of mixture-of-experts models whose name does
+  not say it. Models without a readable config use the estimate below.
+* **Speed is calibrated** on published llama.cpp results (Apple Silicon M1–M4, DGX Spark):
+  `tests/advisor-calibration.test.mjs` fails if generation drifts more than 25% or prompt reading more than 50%
+  from them. Prompt reading (time to first token) uses each GPU's dense FP16 tensor TFLOPS.
+* Without config data, the advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
   ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size; for mixture-of-experts models with the
   geometric mean of active and total parameters, and scaled by the attention type read from the Hub
   architecture tag: ×0.3 for MLA such as DeepSeek-V3 / Kimi K2 / GLM-5, ×0.25 for hybrid linear-attention

@@ -10,6 +10,7 @@ are attached to the model they quantize as "how to run it".
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from collections import defaultdict
 
 from .common import rows
@@ -139,7 +140,7 @@ def size_b(m: dict) -> float | None:
     return measured or None
 
 
-def build(con) -> dict:
+def build(con, cache=None) -> dict:
     models = rows(con, f"""
         SELECT id, author, pipeline_tag AS task, license_family AS lf, license, parameters, family,
                languages, tags, formats, library, downloads_30d AS dl, likes, trending_score AS trend,
@@ -318,4 +319,32 @@ def build(con) -> dict:
         })
 
     out.sort(key=lambda r: -r["dl"])
+    if cache is not None:
+        add_architecture(out, cache)
     return {"caps": CAPS, "tool_families": sorted(TOOL_FAMILIES), "models": out}
+
+
+def add_architecture(out: list[dict], cache) -> None:
+    """Exact KV-cache size, context limit and MoE active size from each model's config.json."""
+    from .hfconfig import load_configs
+
+    llm = [m for m in out if m["task"] in ("text-generation", "image-text-to-text", "any-to-any")]
+    llm.sort(key=lambda m: -(m["dl"] or 0))
+    # kept next to the release snapshots, which CI already caches between runs
+    configs = load_configs([m["id"] for m in llm], Path(cache) / "snapshots")
+    moe_bit = 1 << CAPS.index("moe")
+    for m in llm:
+        c = configs.get(m["id"])
+        if not c:
+            continue
+        m["kvb"] = c["kvb"]
+        if c.get("kvs"):
+            m["kvs"], m["win"] = c["kvs"], c["win"]
+        if c.get("mc"):
+            m["mc"] = c["mc"]
+        # Active size of a mixture of experts whose name does not say it (e.g. "KAT-Coder", "GLM-5.3-Flash").
+        if c.get("idle") and m["p"] and not m["a"]:
+            active = round(m["p"] - c["idle"], 1)
+            if 0.3 <= active < m["p"] * 0.7:
+                m["a"] = active
+                m["caps"] |= moe_bit

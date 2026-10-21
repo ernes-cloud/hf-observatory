@@ -88,9 +88,11 @@ function checkResult(res, s, label, r) {
     if (s.archFilter === 'moe') assert.ok(m.moe || m.a, `${where}: not MoE`);
     if (s.archFilter === 'dense') assert.ok(!m.moe && !m.a, `${where}: is MoE`);
     if (must.includes('vision')) assert.ok(hasCap(data, m, 'vision'), where);
-    if (must.includes('longctx')) assert.ok(hasCap(data, m, 'longctx'), where);
+    if (must.includes('longctx')) assert.ok(m.mc ? m.mc >= 131072 : hasCap(data, m, 'longctx'), `${where}: not long-context (${m.mc})`);
     if (must.includes('spec') && isLLM) assert.ok(fit.spec, `${where}: no speculative option`);
     if (!isLLM) continue;
+    if (m.mc) assert.ok(x.ctx <= m.mc, `${where}: context ${x.ctx} beyond the model's ${m.mc}`);
+    if (fit.pp != null) assert.ok(Number.isFinite(fit.pp) && fit.pp > 0, `${where}: prompt speed ${fit.pp}`);
     // fits the pool it claims to run from
     const pool = fit.where === 'gpu' ? b.fast : b.fast + b.slow;
     assert.ok(fit.need.total <= pool + 1e-6, `${where}: needs ${fit.need.total.toFixed(1)} GB of ${pool.toFixed(1)}`);
@@ -172,5 +174,9 @@ test('every model in the data is well formed', { skip: !data }, () => {
     if (m.a != null) assert.ok(m.a > 0 && m.a < m.p, `${m.id}: ${m.a}B active of ${m.p}B`);
     for (const repo of [m.gguf, m.mlx, m.gmtp, ...Object.values(m.q || {}), ...(m.dr || []).map((d) => d.id)].filter(Boolean)) assert.match(repo, /^[\w.-]+\/[\w.-]+$/, m.id);
     for (const d of m.dr || []) assert.ok(['dflash2', 'dflash', 'dspark', 'eagle3', 'eagle'].includes(d.m), `${m.id}: draft ${d.m}`);
+    // architecture read from config.json
+    if (m.kvb != null) assert.ok(m.kvb >= 0 && m.kvb < 4e6, `${m.id}: ${m.kvb} KV bytes per token`);
+    if (m.kvs != null) assert.ok(m.kvs > 0 && m.win > 0, `${m.id}: sliding window ${m.kvs} / ${m.win}`);
+    if (m.mc != null) assert.ok(m.mc >= 512 && m.mc <= 16777216, `${m.id}: context ${m.mc}`);
   }
 });

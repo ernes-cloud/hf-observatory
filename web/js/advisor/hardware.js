@@ -2,6 +2,32 @@
 // mem: memory the model can use (GB); bw: memory bandwidth (GB/s), which bounds generation speed.
 // Figures are public spec-sheet values; "usable" fractions are applied in engine.js.
 
+/**
+ * GPU architecture decides which low-precision formats run natively:
+ * Blackwell → FP4 (NVFP4) and FP8; Hopper / Ada / CDNA3 → FP8; Ampere / Turing → INT8 and INT4 (AWQ/GPTQ).
+ */
+export function archOf(name) {
+  const n = name.toLowerCase();
+  if (/\bada\b/.test(n)) return 'ada';
+  if (/rtx 50|rtx pro|blackwell|b200|gb10|gb300|thor/.test(n)) return 'blackwell';
+  if (/h100|h200|gh200/.test(n)) return 'hopper';
+  if (/rtx 40|ada|l40s|(^|\s)l4$/.test(n)) return 'ada';
+  if (/rtx 30|a100|(^|\s)a10$|rtx a\d|orin/.test(n)) return 'ampere';
+  if (/rtx 20|t4/.test(n)) return 'turing';
+  if (/mi300|mi325/.test(n)) return 'cdna3';
+  if (/rx 9070/.test(n)) return 'rdna4';
+  if (/radeon|ryzen ai/.test(n)) return 'rdna3';
+  if (/arc/.test(n)) return 'xe';
+  return 'ampere';
+}
+export const vendorOf = (name) => (/radeon|instinct|ryzen/i.test(name) ? 'amd' : /arc/i.test(name) ? 'intel' : 'nvidia');
+
+export const ARCH_LABEL = {
+  blackwell: 'Blackwell (native FP4 + FP8)', hopper: 'Hopper (native FP8)', ada: 'Ada Lovelace (native FP8)',
+  ampere: 'Ampere (INT8 / INT4)', turing: 'Turing (INT8 / INT4)', cdna3: 'AMD CDNA 3 (FP8)', rdna4: 'AMD RDNA 4', rdna3: 'AMD RDNA 3',
+  xe: 'Intel Xe', apple: 'Apple Silicon',
+};
+
 export const GPUS = [
   { group: 'NVIDIA GeForce RTX 50', items: [
     ['RTX 5090', 32, 1792], ['RTX 5080', 16, 960], ['RTX 5070 Ti', 16, 896], ['RTX 5070', 12, 672],
@@ -38,17 +64,17 @@ export const GPUS = [
   { group: 'Intel Arc', items: [
     ['Arc Pro B60', 24, 456], ['Arc B580', 12, 456], ['Arc A770 16 GB', 16, 560],
   ] },
-].map((g) => ({ ...g, items: g.items.map(([name, mem, bw]) => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name, mem, bw })) }));
+].map((g) => ({ ...g, items: g.items.map(([name, mem, bw]) => ({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name, mem, bw, arch: archOf(name), vendor: vendorOf(name) })) }));
 
 /** Unified-memory machines: CPU and GPU share one pool. `usable` is how much a model can realistically get. */
 export const UNIFIED = [
-  { id: 'dgx-spark', name: 'NVIDIA DGX Spark (GB10, 128 GB)', mem: 128, usable: 119, bw: 273, note: 'Also ASUS Ascent GX10, Dell Pro Max GB10, HP ZGX Nano, Lenovo ThinkStation PGX, MSI EdgeXpert. Two units can be linked for ~240 GB.', cluster: 2 },
-  { id: 'dgx-station', name: 'NVIDIA DGX Station (GB300)', mem: 288, usable: 270, bw: 8000, note: '288 GB of HBM3e on the GPU (plus slower LPDDR5X for the CPU).' },
-  { id: 'jetson-thor', name: 'NVIDIA Jetson AGX Thor (128 GB)', mem: 128, usable: 110, bw: 273, note: 'Robotics / edge module.' },
-  { id: 'jetson-orin-64', name: 'NVIDIA Jetson AGX Orin (64 GB)', mem: 64, usable: 52, bw: 204, note: 'Edge module.' },
-  { id: 'jetson-orin-nano', name: 'NVIDIA Jetson Orin Nano Super (8 GB)', mem: 8, usable: 5.5, bw: 102, note: 'Small edge board: stick to models under ~4B.' },
-  { id: 'strix-halo-128', name: 'AMD Ryzen AI Max+ 395 (128 GB)', mem: 128, usable: 110, bw: 256, note: 'Framework Desktop, GMKtec EVO-X2, ASUS ROG Flow Z13 and others. Up to ~110 GB can be given to the GPU on Linux (96 GB on Windows).' },
-  { id: 'strix-halo-64', name: 'AMD Ryzen AI Max (64 GB)', mem: 64, usable: 48, bw: 256, note: 'Up to 48 GB can be assigned to the GPU.' },
+  { id: 'dgx-spark', name: 'NVIDIA DGX Spark (GB10, 128 GB)', arch: 'blackwell', vendor: 'nvidia', arm: true, mem: 128, usable: 119, bw: 273, note: 'Also ASUS Ascent GX10, Dell Pro Max GB10, HP ZGX Nano, Lenovo ThinkStation PGX, MSI EdgeXpert. Two units can be linked for ~240 GB.', cluster: 2 },
+  { id: 'dgx-station', name: 'NVIDIA DGX Station (GB300)', arch: 'blackwell', vendor: 'nvidia', arm: true, mem: 288, usable: 270, bw: 8000, note: '288 GB of HBM3e on the GPU (plus slower LPDDR5X for the CPU).' },
+  { id: 'jetson-thor', name: 'NVIDIA Jetson AGX Thor (128 GB)', arch: 'blackwell', vendor: 'nvidia', arm: true, mem: 128, usable: 110, bw: 273, note: 'Robotics / edge module.' },
+  { id: 'jetson-orin-64', name: 'NVIDIA Jetson AGX Orin (64 GB)', arch: 'ampere', vendor: 'nvidia', arm: true, mem: 64, usable: 52, bw: 204, note: 'Edge module.' },
+  { id: 'jetson-orin-nano', name: 'NVIDIA Jetson Orin Nano Super (8 GB)', arch: 'ampere', vendor: 'nvidia', arm: true, mem: 8, usable: 5.5, bw: 102, note: 'Small edge board: stick to models under ~4B.' },
+  { id: 'strix-halo-128', name: 'AMD Ryzen AI Max+ 395 (128 GB)', arch: 'rdna3', vendor: 'amd', mem: 128, usable: 110, bw: 256, note: 'Framework Desktop, GMKtec EVO-X2, ASUS ROG Flow Z13 and others. Up to ~110 GB can be given to the GPU on Linux (96 GB on Windows).' },
+  { id: 'strix-halo-64', name: 'AMD Ryzen AI Max (64 GB)', arch: 'rdna3', vendor: 'amd', mem: 64, usable: 48, bw: 256, note: 'Up to 48 GB can be assigned to the GPU.' },
 ];
 
 /** Apple Silicon chips: bandwidth and the memory sizes they were sold with. */

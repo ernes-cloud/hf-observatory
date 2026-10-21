@@ -1,7 +1,7 @@
 // Model advisor engine: memory budgets, quantization choice, KV cache, speed and ranking.
 // Pure functions with no DOM access, so they can be unit-tested with `node --test`.
 
-import { MAC_CHIPS, UNIFIED, CPU_MEMORY, gpuById } from './hardware.js';
+import { ARCH_LABEL, MAC_CHIPS, UNIFIED, CPU_MEMORY, gpuById } from './hardware.js';
 
 /* ------------------------------------------------------------------ catalogues */
 
@@ -77,6 +77,76 @@ export const QUANTS = {
   st: [['BF16', 2.0, 1], ['FP8', 1.05, 0.99], ['AWQ 4-bit', 0.6, 0.94]],
 };
 export const LOW_QUALITY = new Set(['Q3_K_M', 'IQ2_M', '3-bit']);
+
+/**
+ * Formats a GPU server (vLLM / SGLang / Transformers) can run natively depend on the architecture:
+ * Blackwell has FP4 tensor cores (NVFP4), Hopper / Ada / CDNA3 have FP8, Ampere and older use INT8 / INT4.
+ * Each entry: [label, bytes per parameter, quality factor, pre-quantized repo key (null = runs from the original)].
+ */
+export function serverLadder(arch, m = {}) {
+  if (m.fam === 'GPT-OSS' || (m.q && m.q.mxfp4 === m.id)) return [['MXFP4 (native)', 0.55, 1, null]];
+  const half = arch === 'turing' ? 'FP16' : 'BF16';
+  if (arch === 'blackwell') return [[half, 2.0, 1, null], ['FP8', 1.05, 0.99, 'fp8'], ['NVFP4', 0.56, 0.95, 'nvfp4']];
+  if (['hopper', 'ada', 'cdna3'].includes(arch)) return [[half, 2.0, 1, null], ['FP8', 1.05, 0.99, 'fp8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
+  return [[half, 2.0, 1, null], ['INT8 (W8A16)', 1.05, 0.985, 'int8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
+}
+/** Pre-quantized repository for a server format (FP8 can also be applied on the fly to the original weights). */
+export function serverRepo(m, key) {
+  if (!key) return { repo: m.id, onTheFly: false };
+  const q = m.q || {};
+  const repo = key === 'awq' ? q.awq || q.gptq : q[key];
+  if (repo) return { repo, onTheFly: false };
+  if (key === 'fp8') return { repo: m.id, onTheFly: true };
+  return { repo: null, onTheFly: false };
+}
+
+/* ------------------------------------------------------------------ speculative decoding */
+
+// Approximate single-user decode speed-ups (they depend on the acceptance rate of each prompt).
+export const SPEC = {
+  dflash2: { label: 'DFlash2 draft', speedup: 2.3 },
+  dflash: { label: 'DFlash draft', speedup: 2.0 },
+  dspark: { label: 'DSpark draft', speedup: 2.1 },
+  eagle3: { label: 'EAGLE-3 draft', speedup: 1.7 },
+  eagle: { label: 'EAGLE draft', speedup: 1.5 },
+  mtp: { label: 'MTP (built-in heads)', speedup: 1.5 },
+};
+
+/** vLLM speculative "method" name for built-in MTP heads. */
+export function mtpMethod(m) {
+  const id = m.id.toLowerCase();
+  if (/qwen3-(coder-)?next/.test(id)) return 'qwen3_next_mtp';
+  if (/qwen3\.[5-9]|qwen3\.\d{2}/.test(id) || m.fam === 'Qwen') return 'qwen3_5_mtp';
+  if (m.fam === 'DeepSeek' || /kimi|mimo/.test(id)) return 'deepseek_mtp';
+  return 'mtp';
+}
+
+/**
+ * Best speculative-decoding option for a model on a runtime, or null.
+ * vLLM: MTP heads, DFlash / DFlash2 and EAGLE-3 drafts. SGLang: also DSpark. llama.cpp: MTP with an
+ * MTP-preserving GGUF (single user, text only) or a DFlash2 GGUF draft (needs a build with DFlash2).
+ */
+export function specFor(m, runtime, s) {
+  const drafts = m.dr || [];
+  const server = ['vllm', 'sglang'].includes(runtime);
+  const pickDraft = (methods, gguf) => drafts.find((d) => methods.includes(d.m) && !!d.g === gguf);
+  if (server) {
+    const allowed = runtime === 'sglang' ? ['dflash2', 'dflash', 'dspark', 'eagle3', 'eagle'] : ['dflash2', 'dflash', 'eagle3', 'eagle'];
+    const d = pickDraft(allowed, false);
+    if (d) return { method: d.m, draft: d.id, draftP: d.p || 1, ...SPEC[d.m] };
+    if (m.mtp) return { method: 'mtp', draft: null, draftP: 0, ...SPEC.mtp, vllmMethod: mtpMethod(m) };
+    return null;
+  }
+  if (runtime === 'llamacpp') {
+    if (m.gmtp && s.users <= 1 && s.use !== 'vision') return { method: 'mtp', draft: null, draftP: 0, ...SPEC.mtp, gguf: m.gmtp };
+    const d = pickDraft(['dflash2'], true);
+    if (d) return { method: 'dflash2', draft: d.id, draftP: d.p || 1, ...SPEC.dflash2, experimental: true };
+  }
+  return null;
+}
+
+/** Speculative decoding helps one user a lot and a busy server much less. */
+export const specGain = (spec, users) => 1 + (spec.speedup - 1) * (users <= 1 ? 1 : users <= 4 ? 0.7 : users <= 16 ? 0.4 : 0.15);
 const KV_FACTOR = { f16: 1, q8: 0.5, q4: 0.28 };
 
 // Size slider stops (billions of parameters) and context stops (tokens).
@@ -91,6 +161,13 @@ const OFFICIAL = new Set(['qwen', 'meta-llama', 'mistralai', 'google', 'microsof
 
 // vLLM `--tool-call-parser` per family (only where the parser name is well established).
 export const TOOL_PARSERS = { Qwen: 'hermes', Llama: 'llama3_json', Mistral: 'mistral', 'GPT-OSS': 'openai', Granite: 'granite', DeepSeek: 'deepseek_v3', Kimi: 'kimi_k2', GLM: 'glm45' };
+/** vLLM tool-call parser for a model: newer Qwen generations use the XML format, Qwen3-Coder its own. */
+export function toolParser(m) {
+  const id = m.id.toLowerCase();
+  if (/qwen3-coder/.test(id)) return 'qwen3_coder';
+  if (/qwen3\.[5-9]|qwen3\.\d{2}/.test(id)) return 'qwen3_xml';
+  return TOOL_PARSERS[m.fam] || null;
+}
 
 /* ------------------------------------------------------------------ memory */
 
@@ -108,29 +185,29 @@ export function budgetOf(s) {
   if (s.hw === 'mac') {
     const chip = MAC_CHIPS.find((c) => c.id === s.chip) || MAC_CHIPS[0];
     const usable = s.mac * (s.mac >= 64 ? 0.75 : 0.67);
-    return { kind: 'mac', fast: usable, fastBw: chip.bw, slow: 0, slowBw: 0, n: 1,
+    return { kind: 'mac', arch: 'apple', vendor: 'apple', fast: usable, fastBw: chip.bw, slow: 0, slowBw: 0, n: 1,
       label: `${chip.name} Mac · ${s.mac} GB unified memory`,
       detail: `macOS lets the GPU use about ${Math.round(usable)} GB of it (raise it with sudo sysctl iogpu.wired_limit_mb). Bandwidth ${chip.bw} GB/s.` };
   }
   if (s.hw === 'unified') {
     const u = UNIFIED.find((x) => x.id === s.unified) || UNIFIED[0];
     const n = Math.min(Math.max(1, s.nunits || 1), u.cluster || 1);
-    return { kind: 'unified', fast: u.usable * n, fastBw: u.bw, slow: 0, slowBw: 0, n,
+    return { kind: 'unified', arch: u.arch, vendor: u.vendor, arm: !!u.arm, fast: u.usable * n, fastBw: u.bw, slow: 0, slowBw: 0, n,
       label: `${n > 1 ? `${n}× ` : ''}${u.name}`,
-      detail: `about ${Math.round(u.usable * n)} GB usable for models, ${u.bw} GB/s${n > 1 ? ' per unit' : ''}. ${u.note}` };
+      detail: `about ${Math.round(u.usable * n)} GB usable for models, ${u.bw} GB/s${n > 1 ? ' per unit' : ''}, ${ARCH_LABEL[u.arch]}. ${u.note}` };
   }
   if (s.hw === 'cpu') {
     const usable = Math.max(1, s.ram * 0.7 - 2);
-    return { kind: 'cpu', fast: 0, fastBw: 0, slow: usable, slowBw: cpu.bw, n: 1,
+    return { kind: 'cpu', arch: 'cpu', vendor: 'cpu', fast: 0, fastBw: 0, slow: usable, slowBw: cpu.bw, n: 1,
       label: `CPU only · ${s.ram} GB RAM`, detail: `about ${Math.round(usable)} GB usable, ${cpu.bw} GB/s (${cpu.name}). Fine for small models; large ones run at a few words per second.` };
   }
-  const g = s.gpu === 'custom' ? { name: `${s.customVram} GB GPU`, mem: +s.customVram || 8, bw: +s.customBw || 400 } : (gpuById(s.gpu) || gpuById('rtx-4090'));
+  const g = s.gpu === 'custom' ? { name: `${s.customVram} GB GPU`, mem: +s.customVram || 8, bw: +s.customBw || 400, arch: s.customArch || 'ada', vendor: 'nvidia' } : (gpuById(s.gpu) || gpuById('rtx-4090'));
   const n = Math.max(1, s.ngpu || 1);
   const usable = Math.max(1, g.mem * n * (n > 1 ? 0.94 : 0.96) - 0.8 * n);
   const slow = s.offload ? Math.max(0, s.ram * 0.7 - 4) : 0;
-  return { kind: 'gpu', fast: usable, fastBw: g.bw, slow, slowBw: cpu.bw, n,
+  return { kind: 'gpu', arch: g.arch, vendor: g.vendor, fast: usable, fastBw: g.bw, slow, slowBw: cpu.bw, n,
     label: `${n > 1 ? `${n}× ` : ''}${g.name}${n > 1 ? ` · ${g.mem * n} GB VRAM` : ` · ${g.mem} GB VRAM`}`,
-    detail: `about ${Math.round(usable)} GB usable for the model, ${g.bw} GB/s per card${slow ? `; plus ~${Math.round(slow)} GB of system RAM for overflow (much slower)` : ''}.` };
+    detail: `about ${Math.round(usable)} GB usable for the model, ${g.bw} GB/s per card, ${ARCH_LABEL[g.arch] || g.arch}${slow ? `; plus ~${Math.round(slow)} GB of system RAM for overflow (much slower)` : ''}.` };
 }
 
 /** Effective bandwidth for one generation stream on the fast pool. */
@@ -174,10 +251,16 @@ export function fitModel(m, kind, s, b, runtime) {
   const p = m.p;
   // Unknown-active MoE (tagged "moe" but no "A3B" in the name): assume ~12% of parameters are active.
   const active = m.a || (m.moe ? p * 0.12 : p);
-  const ladder = QUANTS[kind].filter(([q]) => !(['F16', 'bf16'].includes(q) && p > 2 && s.priority > 10));
+  const base = kind === 'st' ? serverLadder(b.arch, m) : QUANTS[kind];
+  const ladder = base.filter(([q]) => !(['F16', 'bf16'].includes(q) && p > 2 && s.priority > 10));
   const options = [];
-  for (const [quant, bpp, q] of ladder) {
-    if (kind === 'st' && runtime === 'transformers' && quant === 'AWQ 4-bit') continue;
+  for (const [quant, bpp, q, key] of ladder) {
+    let repo = kind === 'gguf' ? m.gguf : kind === 'mlx' ? m.mlx : m.id;
+    let onTheFly = false;
+    if (kind === 'st') {
+      ({ repo, onTheFly } = serverRepo(m, key));
+      if (!repo) continue; // no pre-quantized build of this format: skip rather than send people searching
+    }
     const need = memNeeded(p, bpp, s);
     let where = null;
     if (b.fast && need.total <= b.fast) where = 'gpu';
@@ -186,7 +269,7 @@ export function fitModel(m, kind, s, b, runtime) {
     const bb = where === 'split' ? { ...b, slowNeed: need.total - b.fast } : b;
     // MoE routing and less regular memory access cost some of the theoretical speed-up.
     const t = speedOf(active, bpp, s, bb, where, runtime) * (active < p ? 0.7 : 1);
-    options.push({ quant, bpp, qf: q, need, where, low: LOW_QUALITY.has(quant), tps: t, download: p * bpp });
+    options.push({ quant, bpp, qf: q, need, where, low: LOW_QUALITY.has(quant), tps: t, download: p * bpp, repo, onTheFly });
   }
   if (!options.length) return null;
   const target = targetSpeed(s.priority);
@@ -201,7 +284,7 @@ export function fitModel(m, kind, s, b, runtime) {
 /** Largest dense model (B) that fits fully in fast memory at each quantization. */
 export function capacity(kind, s, b) {
   const mem = b.fast || b.slow;
-  return QUANTS[kind].filter(([q]) => !['F16', 'bf16'].includes(q) || kind === 'st').map(([name, bpp]) => {
+  return (kind === 'st' ? serverLadder(b.arch) : QUANTS[kind]).filter(([q]) => !['F16', 'bf16'].includes(q) || kind === 'st').map(([name, bpp]) => {
     let lo = 0, hi = 3000;
     for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (memNeeded(mid, bpp, s).total <= mem) lo = mid; else hi = mid; }
     return [name, lo];
@@ -269,12 +352,20 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
         if (!fit || (f.where === 'gpu' && fit.where !== 'gpu') || (f.where === fit.where && f.tps > fit.tps * 1.15)) { fit = f; kind = k; }
       }
       if (!fit) continue;
+      // Speculative decoding: faster single-user generation for a little extra memory (the draft).
+      const rt = s.runtime !== 'any' ? s.runtime : kind === 'st' ? 'vllm' : kind === 'gguf' ? 'llamacpp' : kind;
+      const spec = s.spec !== 'off' ? specFor(m, rt, s) : null;
+      if (spec) {
+        const extra = spec.draftP * 2 * 1.1 + (spec.method === 'mtp' ? fit.need.weights * 0.03 : 0);
+        const room = (fit.where === 'gpu' ? b.fast : b.fast + b.slow) - fit.need.total;
+        if (extra <= room) fit = { ...fit, spec, tpsBase: fit.tps, tps: fit.tps * specGain(spec, s.users), need: { ...fit.need, draft: extra, total: fit.need.total + extra } };
+      }
     } else {
       const p = m.p;
       const need = p != null ? p * 2 + (s.use === 'image' ? 3 : 0.6) : null;
       const mem = b.fast || b.slow;
       if (need != null && need > mem) continue;
-      fit = { quant: '16-bit', bpp: 2, qf: 1, need: need != null ? { total: need, weights: p * 2, kv: 0 } : null, where: b.fast ? 'gpu' : 'cpu', low: false, tps: null, download: p != null ? p * 2 : null };
+      fit = { quant: '16-bit', bpp: 2, qf: 1, need: need != null ? { total: need, weights: p * 2, kv: 0 } : null, where: b.fast ? 'gpu' : 'cpu', low: false, tps: null, download: p != null ? p * 2 : null, repo: m.id };
       kind = 'st';
     }
 
@@ -313,7 +404,13 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (fit.where === 'split') score -= 1.5;
     if (fit.where === 'cpu' && b.kind !== 'cpu') score -= 1;
     if (fit.low) score -= 1.5;
-    if (isLLM && fit.tps != null) score -= fit.tps < 3 ? 3.5 : fit.tps < 6 ? 2 : fit.tps < 10 ? 0.8 : 0;
+    // Too slow for the speed the user asked for: push it down (relative to the slider's target).
+    if (isLLM && fit.tps != null) {
+      const ratio = fit.tps / targetSpeed(s.priority);
+      score -= fit.tps < 3 ? 6 : ratio < 0.35 ? 4 : ratio < 0.6 ? 2 : ratio < 0.85 ? 0.7 : 0;
+    }
+    if (fit.spec) why.push(`${fit.spec.label}: ≈ ${round1(specGain(fit.spec, s.users))}× faster generation${fit.spec.experimental ? ' (needs a llama.cpp build with DFlash2)' : ''}`);
+    if (kind === 'st' && fit.repo !== m.id) why.push(`Pre-quantized ${fit.quant} build available for your ${b.arch === 'blackwell' && fit.quant === 'NVFP4' ? 'Blackwell GPU (native FP4)' : 'GPU'}`);
     if (kind === 'gguf' && !m.gguf) { score -= 1.5; why.push('No GGUF build tracked yet: use the search link below'); }
     if (kind === 'mlx' && !m.mlx) score -= 1;
 

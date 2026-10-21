@@ -1,7 +1,7 @@
 // Unit tests for the model advisor engine: `node --test tests/`
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { budgetOf, capacity, fitModel, kvGB, memNeeded, recommend, speedOf } from '../web/js/advisor/engine.js';
+import { budgetOf, capacity, fitModel, kvGB, memNeeded, recommend, serverLadder, specFor, speedOf, toolParser } from '../web/js/advisor/engine.js';
 
 const base = { use: 'chat', agent: 'coding', hw: 'gpu', gpu: 'rtx-4090', ngpu: 1, ram: 64, cpuMem: 'ddr5', offload: false,
   runtime: 'ollama', ctx: 8192, users: 1, kv: 'f16', priority: 40, sizeLo: 0, sizeHi: 25, sort: 'best' };
@@ -86,4 +86,51 @@ test('recommend ranks tool-calling models first for function-calling agents and 
 test('16-bit weights are not chosen for GGUF models above 2B', () => {
   const f = fitModel({ p: 8 }, 'gguf', { ...base, priority: 40 }, budgetOf(base), 'ollama');
   assert.notEqual(f.quant, 'F16');
+});
+
+const qwen27 = { id: 'Qwen/Qwen3.8-27B', p: 27, fam: 'Qwen', st: true, gguf: 'x/Qwen3.8-27B-GGUF', mtp: true,
+  q: { nvfp4: 'RadixArk/Qwen3.8-27B-NVFP4', fp8: 'Qwen/Qwen3.8-27B-FP8', awq: 'c/Qwen3.8-27B-AWQ' },
+  dr: [{ id: 'z-lab/Qwen3.8-27B-DFlash2', m: 'dflash2', g: false, p: 1.9 }, { id: 'z-lab/Qwen3.8-27B-DFlash2-GGUF', m: 'dflash2', g: true, p: 1.9 }] };
+
+test('server quantization follows the GPU architecture', () => {
+  assert.deepEqual(serverLadder('blackwell').map((x) => x[0]), ['BF16', 'FP8', 'NVFP4']);
+  assert.deepEqual(serverLadder('ada').map((x) => x[0]), ['BF16', 'FP8', 'AWQ / GPTQ 4-bit']);
+  assert.deepEqual(serverLadder('ampere').map((x) => x[0]), ['BF16', 'INT8 (W8A16)', 'AWQ / GPTQ 4-bit']);
+  assert.equal(serverLadder('hopper', { fam: 'GPT-OSS' })[0][0], 'MXFP4 (native)');
+});
+
+test('a 27B on an RTX 5090 with vLLM uses the NVFP4 build; on an RTX 4090 the AWQ one', () => {
+  const s5090 = { ...base, gpu: 'rtx-5090', runtime: 'vllm', priority: 60 };
+  const f5090 = fitModel(qwen27, 'st', s5090, budgetOf(s5090), 'vllm');
+  assert.equal(f5090.quant, 'NVFP4');
+  assert.equal(f5090.repo, 'RadixArk/Qwen3.8-27B-NVFP4');
+  const s4090 = { ...base, runtime: 'vllm', priority: 60 };
+  const f4090 = fitModel(qwen27, 'st', s4090, budgetOf(s4090), 'vllm');
+  assert.equal(f4090.quant, 'AWQ / GPTQ 4-bit');
+  assert.equal(f4090.repo, 'c/Qwen3.8-27B-AWQ');
+});
+
+test('FP8 can be applied on the fly when no FP8 build exists', () => {
+  const s = { ...base, gpu: 'h100-sxm', runtime: 'vllm', priority: 40 };
+  const f = fitModel({ id: 'a/m-8b', p: 8, st: true }, 'st', s, budgetOf(s), 'vllm');
+  assert.ok(['BF16', 'FP8'].includes(f.quant));
+  const big = fitModel({ id: 'a/m-60b', p: 60, st: true }, 'st', s, budgetOf(s), 'vllm');
+  assert.equal(big.quant, 'FP8');
+  assert.equal(big.onTheFly, true);
+});
+
+test('speculative decoding: DFlash2 draft in vLLM/SGLang, MTP or DFlash2 GGUF in llama.cpp, none in Ollama', () => {
+  assert.equal(specFor(qwen27, 'vllm', base).method, 'dflash2');
+  assert.equal(specFor(qwen27, 'sglang', base).draft, 'z-lab/Qwen3.8-27B-DFlash2');
+  assert.equal(specFor({ ...qwen27, dr: null }, 'vllm', base).vllmMethod, 'qwen3_5_mtp');
+  assert.equal(specFor({ ...qwen27, gmtp: 'u/Qwen3.8-27B-MTP-GGUF' }, 'llamacpp', base).method, 'mtp');
+  assert.equal(specFor(qwen27, 'llamacpp', base).method, 'dflash2');
+  assert.equal(specFor(qwen27, 'ollama', base), null);
+});
+
+test('tool-call parser per model generation', () => {
+  assert.equal(toolParser({ id: 'Qwen/Qwen3.8-27B', fam: 'Qwen' }), 'qwen3_xml');
+  assert.equal(toolParser({ id: 'Qwen/Qwen3-Coder-30B-A3B-Instruct', fam: 'Qwen' }), 'qwen3_coder');
+  assert.equal(toolParser({ id: 'Qwen/Qwen2.5-7B-Instruct', fam: 'Qwen' }), 'hermes');
+  assert.equal(toolParser({ id: 'meta-llama/Llama-3.1-8B-Instruct', fam: 'Llama' }), 'llama3_json');
 });

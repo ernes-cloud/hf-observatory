@@ -4,9 +4,10 @@ import { term } from '../glossary.js';
 import { pageHeader } from '../ui.js';
 import { CPU_MEMORY, GPUS, MAC_CHIPS, PRESETS, RAM_SIZES, UNIFIED } from '../advisor/hardware.js';
 import {
-  AGENT_KINDS, CTX_STOPS, LLM_USES, QUANTS, RUNTIMES, SIZE_STOPS, TOOL_PARSERS, USER_STOPS, USES,
-  agentKind, budgetOf, capacity, recommend, runtimeKinds, speedLabel,
+  AGENT_KINDS, CTX_STOPS, LLM_USES, RUNTIMES, SIZE_STOPS, USER_STOPS, USES,
+  agentKind, capacity, recommend, runtimeKinds, speedLabel,
 } from '../advisor/engine.js';
+import { commandsFor } from '../advisor/commands.js';
 
 const LANGS = ['en', 'es', 'zh', 'fr', 'de', 'ja', 'ko', 'pt', 'it', 'ru', 'ar', 'hi'];
 const MAC_SIZES = [8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512];
@@ -16,13 +17,13 @@ const DEFAULT = {
   use: 'chat', agent: 'coding', ragPart: 'both',
   hw: 'gpu', gpu: 'rtx-4090', customVram: 16, customBw: 500, ngpu: 1, chip: 'm4-max', mac: 64, unified: 'dgx-spark', nunits: 1,
   ram: 32, cpuMem: 'ddr5', offload: false,
-  runtime: 'ollama', ctx: 8192, users: 1, kv: 'f16',
+  runtime: 'ollama', ctx: 8192, users: 1, kv: 'f16', spec: 'auto',
   sizeLo: 0, sizeHi: SIZE_STOPS.length - 1, priority: 40,
   lang: '', commercial: false, hideGated: false, uncensored: false, officialOnly: false, sort: 'best',
 };
 // short URL keys so a configuration can be shared
 const KEYS = { use: 'u', agent: 'ag', ragPart: 'rp', hw: 'hw', gpu: 'g', customVram: 'cv', customBw: 'cb', ngpu: 'n', chip: 'ch', mac: 'mm', unified: 'uf', nunits: 'nu',
-  ram: 'r', cpuMem: 'cm', offload: 'of', runtime: 'rt', ctx: 'c', users: 'us', kv: 'kv', sizeLo: 'lo', sizeHi: 'hi', priority: 'pr', lang: 'l',
+  ram: 'r', cpuMem: 'cm', offload: 'of', runtime: 'rt', ctx: 'c', users: 'us', kv: 'kv', spec: 'sp', sizeLo: 'lo', sizeHi: 'hi', priority: 'pr', lang: 'l',
   commercial: 'co', hideGated: 'hg', uncensored: 'un', officialOnly: 'oo', sort: 's' };
 
 let A = null;
@@ -126,9 +127,12 @@ function formHtml() {
       <div class="filters">
         <div class="field"><label for="a-runtime">Runtime</label>
           <select id="a-runtime" name="runtime">${option('any', 'No preference', state.runtime)}${Object.entries(RUNTIMES).map(([k, r]) => option(k, r.label, state.runtime)).join('')}</select></div>
+        <div class="field" data-llm><label for="a-spec">Speculative decoding</label>
+          <select id="a-spec" name="spec">${option('auto', 'Use when available', state.spec)}${option('off', 'Off', state.spec)}</select></div>
         <div class="field" data-llm><label for="a-kv">KV cache precision</label>
           <select id="a-kv" name="kv">${option('f16', '16-bit (default)', state.kv)}${option('q8', '8-bit: half the memory', state.kv)}${option('q4', '4-bit: least memory', state.kv)}</select></div>
       </div>
+      <p class="note" data-llm id="spec-note"></p>
       <div class="slider-field" data-llm>
         <div class="slider-head"><label for="a-ctx">Context window</label><output id="o-ctx"></output></div>
         <input type="range" id="a-ctx" name="ctxIdx" min="0" max="${CTX_STOPS.length - 1}" step="1">
@@ -182,7 +186,7 @@ function syncForm() {
   f.gpu.value = state.gpu; f.customVram.value = state.customVram; f.customBw.value = state.customBw;
   f.ngpu.value = String(state.ngpu); f.chip.value = state.chip; f.mac.value = String(state.mac);
   f.unified.value = state.unified; f.nunits.value = String(state.nunits); f.ram.value = String(state.ram); f.cpuMem.value = state.cpuMem;
-  f.offload.checked = state.offload; f.runtime.value = state.runtime; f.kv.value = state.kv;
+  f.offload.checked = state.offload; f.runtime.value = state.runtime; f.kv.value = state.kv; f.spec.value = state.spec;
   f.ctxIdx.value = String(Math.max(0, CTX_STOPS.indexOf(state.ctx)));
   f.usersIdx.value = String(Math.max(0, USER_STOPS.indexOf(state.users)));
   f.sizeLo.value = String(state.sizeLo); f.sizeHi.value = String(state.sizeHi); f.priority.value = String(state.priority);
@@ -202,7 +206,7 @@ function readForm(changed) {
     use: val('use') || 'chat', agent: val('agent') || 'coding', ragPart: val('ragPart') || 'both', hw: val('hw') || 'gpu',
     gpu: f.gpu.value, customVram: Math.max(1, parseFloat(f.customVram.value) || 8), customBw: Math.max(20, parseFloat(f.customBw.value) || 400),
     ngpu: +f.ngpu.value, chip: f.chip.value, mac: +f.mac.value, unified: f.unified.value, nunits: +f.nunits.value,
-    ram: +f.ram.value, cpuMem: f.cpuMem.value, offload: f.offload.checked, runtime: f.runtime.value, kv: f.kv.value,
+    ram: +f.ram.value, cpuMem: f.cpuMem.value, offload: f.offload.checked, runtime: f.runtime.value, kv: f.kv.value, spec: f.spec.value,
     ctx: CTX_STOPS[+f.ctxIdx.value], users: USER_STOPS[+f.usersIdx.value], sizeLo: lo, sizeHi: hi, priority: +f.priority.value,
     lang: f.lang.value, commercial: f.commercial.checked, officialOnly: f.officialOnly.checked, hideGated: f.hideGated.checked, uncensored: f.uncensored.checked,
   };
@@ -233,6 +237,13 @@ function decorate() {
   const u = UNIFIED.find((x) => x.id === s.unified);
   els.hwNote.textContent = s.hw === 'unified' && u ? u.note : s.hw === 'mac' ? 'MLX is usually the fastest way to run models on a Mac; Ollama and LM Studio also work well.' : '';
   els.hwNote.hidden = !els.hwNote.textContent;
+  const specNote = f.querySelector('#spec-note');
+  specNote.textContent = s.spec === 'off' ? ''
+    : ['vllm', 'sglang'].includes(s.runtime) ? 'Speculative decoding: uses a DFlash2 / DFlash / DSpark / EAGLE-3 draft model or the model’s built-in MTP heads when one exists; typically 1.5–2.5× faster for one user.'
+      : s.runtime === 'llamacpp' ? 'Speculative decoding in llama.cpp: MTP with MTP-preserving GGUF builds (single user, text only), or DFlash2 GGUF drafts with a build that supports them.'
+        : s.runtime === 'any' ? 'Speculative decoding is applied with vLLM / SGLang / llama.cpp when a draft or MTP heads exist.'
+          : 'This runtime does not do speculative decoding; pick vLLM, SGLang or llama.cpp for it.';
+  specNote.hidden = !specNote.textContent || !isLLM;
   // slider readouts
   const lo = SIZE_STOPS[s.sizeLo], hi = SIZE_STOPS[s.sizeHi];
   const full = s.sizeLo === 0 && s.sizeHi === SIZE_STOPS.length - 1;
@@ -247,77 +258,14 @@ function decorate() {
 
 /* --------------------------------------------------------------- results */
 
-function commands(r) {
-  const s = state;
-  const { m, fit, kind } = r;
-  const q = fit.quant;
-  const search = (x) => `https://huggingface.co/models?search=${encodeURIComponent(x)}`;
-  const base = m.id.split('/').pop();
-  const ctxK = s.ctx;
-  const out = [];
-  if (!LLM_USES.has(s.use)) {
-    if (s.use === 'rag') {
-      const isRerank = (m.caps >> A.caps.indexOf('rerank')) & 1;
-      out.push({ label: 'Python', code: isRerank
-        ? `pip install sentence-transformers\npython -c "from sentence_transformers import CrossEncoder as C; print(C('${m.id}').predict([('query', 'passage')]))"`
-        : `pip install sentence-transformers\npython -c "from sentence_transformers import SentenceTransformer as S; print(S('${m.id}').encode(['hello world']).shape)"` });
-      out.push({ label: 'Text Embeddings Inference', code: `docker run --gpus all -p 8080:80 ghcr.io/huggingface/text-embeddings-inference:latest --model-id ${m.id}` });
-      if (!isRerank) out.push({ label: 'Ollama', note: `Many embedding models are also in Ollama's library. <a href="${search(`${base} gguf`)}" rel="noopener">Search GGUF builds</a>.` });
-    } else if (s.use === 'asr') {
-      out.push({ label: 'Python', code: `pip install transformers torch\npython -c "from transformers import pipeline; print(pipeline('automatic-speech-recognition', model='${m.id}')('audio.mp3'))"` });
-      if (/whisper/i.test(m.id)) out.push({ label: 'whisper.cpp', note: 'Whisper models also run very fast with whisper.cpp or faster-whisper.' });
-    } else if (s.use === 'image') {
-      out.push({ label: 'Python', code: `pip install diffusers transformers torch\npython -c "from diffusers import DiffusionPipeline as P; P.from_pretrained('${m.id}').to('${s.hw === 'mac' ? 'mps' : 'cuda'}')('a lighthouse at dawn').images[0].save('out.png')"` });
-      out.push({ label: 'ComfyUI', note: 'ComfyUI (and Draw Things on Mac) load most of these models with a visual workflow editor.' });
-    } else {
-      out.push({ label: 'Model page', note: 'Text-to-speech models each ship their own runner: follow the instructions on the model page.' });
-    }
-    return out;
-  }
-  const ggufQ = QUANTS.gguf.find(([n]) => n === q) ? q : 'Q4_K_M';
-  const repo = m.gguf;
-  const env = [];
-  if (ctxK > 8192) env.push(`OLLAMA_CONTEXT_LENGTH=${ctxK}`);
-  if (s.kv !== 'f16') env.push(`OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=${s.kv === 'q8' ? 'q8_0' : 'q4_0'}`);
-  if (s.users > 1) env.push(`OLLAMA_NUM_PARALLEL=${Math.min(s.users, 16)}`);
-  const parser = /qwen3-coder/i.test(m.id) ? 'qwen3_coder' : TOOL_PARSERS[m.fam];
-  const tp = s.hw === 'gpu' && s.ngpu > 1 ? ` --tensor-parallel-size ${s.ngpu}` : '';
-  const vllmQ = q === 'BF16' ? '' : q === 'FP8' ? ' --quantization fp8' : '';
-  const toolFlags = s.use === 'agents' ? (parser ? ` \\\n  --enable-auto-tool-choice --tool-call-parser ${parser}` : ' \\\n  --enable-auto-tool-choice --tool-call-parser <see model card>') : '';
-  const awqNote = q.includes('AWQ') ? `Needs an AWQ build to fit: <a href="${search(`${base} awq`)}" rel="noopener">search one</a> and serve that instead.` : '';
-
-  const gguf = repo
-    ? {
-      ollama: { label: 'Ollama', code: `${env.length ? `${env.join(' ')} ollama serve   # in one terminal\n` : ''}ollama run hf.co/${repo}:${ggufQ}`, note: s.use === 'agents' ? 'Ollama exposes an OpenAI-compatible API with tool calling at http://localhost:11434/v1.' : '' },
-      llamacpp: { label: 'llama.cpp', code: `llama-server -hf ${repo}:${ggufQ} -c ${ctxK} -ngl 99${s.kv !== 'f16' ? ` -fa on -ctk ${s.kv === 'q8' ? 'q8_0' : 'q4_0'} -ctv ${s.kv === 'q8' ? 'q8_0' : 'q4_0'}` : ''}${s.users > 1 ? ` -np ${s.users}` : ''}${s.use === 'agents' ? ' --jinja' : ''}`, note: 'Chat UI and OpenAI-compatible API at http://localhost:8080.' },
-      lmstudio: { label: 'LM Studio', code: `lms get ${repo}`, note: `Or search “${esc(repo)}” in LM Studio and pick the <strong>${esc(ggufQ)}</strong> file.` },
-    }
-    : {
-      ollama: { label: 'Ollama', note: `No GGUF build of this model is tracked yet. <a href="${search(`${base} gguf`)}" rel="noopener">Search GGUF builds on Hugging Face</a>, then run <code>ollama run hf.co/&lt;repo&gt;:${esc(ggufQ)}</code>.` },
-    };
-  const mlx = s.hw === 'mac'
-    ? { label: 'MLX', code: m.mlx ? `pip install mlx-lm\nmlx_lm.chat --model ${m.mlx}` : `pip install mlx-lm\nmlx_lm.convert --hf-path ${m.id} -q\nmlx_lm.chat --model mlx_model`, note: m.mlx ? '' : 'No MLX build tracked: this converts the original to 4-bit locally.' }
-    : null;
-  const vllm = m.st && s.hw !== 'mac' && s.hw !== 'cpu'
-    ? { label: 'vLLM', code: `vllm serve ${m.id} --max-model-len ${ctxK}${tp}${vllmQ}${s.kv !== 'f16' ? ' --kv-cache-dtype fp8' : ''}${toolFlags}`, note: awqNote || 'OpenAI-compatible API at http://localhost:8000/v1.' }
-    : null;
-  const sglang = m.st && s.hw !== 'mac' && s.hw !== 'cpu'
-    ? { label: 'SGLang', code: `python -m sglang.launch_server --model-path ${m.id} --context-length ${ctxK}${s.hw === 'gpu' && s.ngpu > 1 ? ` --tp ${s.ngpu}` : ''}`, note: awqNote }
-    : null;
-
-  const primary = s.runtime !== 'any' ? s.runtime : kind === 'mlx' ? 'mlx' : kind === 'st' ? 'vllm' : 'ollama';
-  const all = { ...gguf, mlx, vllm, sglang };
-  if (all[primary]) out.push(all[primary]);
-  for (const [k, v] of Object.entries(all)) if (v && k !== primary && v.code) out.push(v);
-  return out;
-}
-
 function resultCard(r, i) {
   const s = state;
   const b = els.lastBudget;
   const { m, fit } = r;
   const [author, ...rest] = m.id.split('/');
   const isLLM = LLM_USES.has(s.use);
+  // the repository you would actually download for this setup
+  const dl = r.kind === 'gguf' ? m.gguf : r.kind === 'mlx' ? m.mlx : fit.repo;
   const pool = fit.where === 'gpu' ? (b.fast || b.slow) : b.fast + b.slow;
   const used = fit.need ? Math.min(100, (fit.need.total / pool) * 100) : null;
   const status = fit.where === 'split' ? ['warn', 'Part of it runs from system RAM']
@@ -325,18 +273,20 @@ function resultCard(r, i) {
       : used > 92 ? ['tight', 'Fits, but tight'] : ['ok', 'Fits comfortably'];
   const sp = fit.tps != null ? speedLabel(fit.tps) : null;
   const lf = LICENSE_FAMILY[m.lf];
-  const cmds = commands(r);
+  const cmds = commandsFor(r, state, b, A.caps);
   const id = `cmd-${i}`;
   return `<article class="advice" data-id="${esc(m.id)}">
     <div class="advice-head">
       <span class="advice-rank">${i + 1}</span>
       <div class="advice-title">
         <h3><a href="${esc(hfUrl(m.id))}" rel="noopener"><span class="author">${esc(author)}/</span>${esc(rest.join('/'))}</a></h3>
+        ${dl && dl !== m.id ? `<p class="repo-line">Download: <a href="${esc(hfUrl(dl))}" rel="noopener"><code>${esc(dl)}</code></a> <span class="muted">(${esc(fit.quant)} build of this model)</span></p>` : ''}
         <div class="chips">
           <span class="chip">${esc(task(m.task))}</span>
           ${m.p ? `<span class="chip">${bill(m.p)}${m.a ? ` · ${m.a}B active` : ''}</span>` : ''}
           <span class="chip ${m.lf === 'oss' ? 'ok' : m.lf === 'non-commercial' ? 'nc' : ''}" title="${esc(m.lic || '')}">${esc(lf.short)}</span>
           ${(m.caps >> A.caps.indexOf('tools')) & 1 ? '<span class="chip">Tool calling</span>' : ''}
+          ${fit.spec ? `<span class="chip ok">${esc(fit.spec.label)}</span>` : m.mtp ? '<span class="chip">MTP heads</span>' : ''}
           ${m.gated ? '<span class="chip gated">Gated</span>' : ''}
         </div>
       </div>
@@ -346,14 +296,14 @@ function resultCard(r, i) {
       <div class="metric fit-${status[0]}">
         <span class="metric-label">Memory</span>
         <span class="metric-value">${fit.need ? `≈ ${gb(fit.need.total)}` : 'small'}</span>
-        <span class="metric-sub">${esc(fit.quant)}${isLLM && fit.need ? ` · ${gb(fit.need.weights)} weights + ${gb(fit.need.kv)} context` : ''}</span>
+        <span class="metric-sub">${esc(fit.quant)}${isLLM && fit.need ? ` · ${gb(fit.need.weights)} weights + ${gb(fit.need.kv)} context${fit.need.draft ? ` + ${gb(fit.need.draft)} ${fit.spec?.draft ? 'draft' : 'MTP'}` : ''}` : ''}</span>
         ${used != null ? `<div class="meter" role="img" aria-label="Uses about ${Math.round(used)}% of your memory"><span style="width:${used.toFixed(1)}%"></span></div>` : ''}
         <span class="metric-status">${status[1]}</span>
       </div>
       ${isLLM ? `<div class="metric speed-${sp[0]}">
         <span class="metric-label">Speed (estimate)</span>
         <span class="metric-value">${tps(fit.tps)} <small>tokens/s</small></span>
-        <span class="metric-sub">≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute</span>
+        <span class="metric-sub">≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute${fit.spec ? ` · ${tps(fit.tpsBase)} without ${esc(fit.spec.label)}` : ''}</span>
         <span class="metric-status">${sp[1]}</span>
       </div>` : ''}
       <div class="metric">
@@ -380,7 +330,8 @@ function summaryHtml(b) {
   const kind = runtimeKinds(s)[0];
   const cap = isLLM ? capacity(kind, s, b) : [];
   return `<div class="budget">
-    <div><p class="eyebrow">Your setup</p><p class="budget-main">${esc(b.label)}</p><p class="note">${esc(b.detail)}</p></div>
+    <div><p class="eyebrow">Your setup</p><p class="budget-main">${esc(b.label)}</p><p class="note">${esc(b.detail)}</p>
+      ${isLLM && b.kind !== 'mac' && b.kind !== 'cpu' && ['vllm', 'sglang', 'any'].includes(s.runtime) ? `<p class="note"><strong>Best GPU-server formats here:</strong> ${b.arch === 'blackwell' ? 'NVFP4 (native FP4 tensor cores) and FP8' : ['hopper', 'ada', 'cdna3'].includes(b.arch) ? 'FP8 (native), AWQ / GPTQ for 4-bit' : 'INT8 and AWQ / GPTQ 4-bit (no FP8 hardware)'}${b.arch === 'blackwell' ? '; MXFP4 for gpt-oss' : ''}.</p>` : ''}</div>
     ${isLLM ? `<div><p class="eyebrow">Biggest model that fits ${b.fast ? 'fully in fast memory' : ''} · ${ctxLabel(s.ctx)} context${s.users > 1 ? ` × ${s.users} users` : ''}</p>
       <ul class="cap-list">${cap.map(([n, p]) => `<li><span>${esc(n)}</span><strong>${p >= 1 ? `≈ ${p >= 10 ? Math.round(p) : p.toFixed(1)}B` : '< 1B'}</strong></li>`).join('')}</ul></div>` : ''}
   </div>`;
@@ -408,6 +359,8 @@ function compareHtml(list) {
       <tbody>
         ${line('Size', (r) => `${bill(r.m.p)}${r.m.a ? ` (${r.m.a}B active)` : ''}`)}
         ${line('Quantization', (r) => esc(r.fit.quant))}
+        ${line('Download repo', (r) => `<code>${esc(r.kind === 'gguf' ? r.m.gguf || '–' : r.kind === 'mlx' ? r.m.mlx || '–' : r.fit.repo)}</code>`)}
+        ${isLLM ? line('Speculative', (r) => (r.fit.spec ? esc(r.fit.spec.label) : '–')) : ''}
         ${line('Memory', (r) => (r.fit.need ? gb(r.fit.need.total) : '–'))}
         ${isLLM ? line('Speed', (r) => `${tps(r.fit.tps)} tok/s`) : ''}
         ${line('Download', (r) => (r.fit.download ? gb(r.fit.download) : '–'))}

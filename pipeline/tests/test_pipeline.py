@@ -171,3 +171,13 @@ def test_advisor_links_faithful_gguf(built):
     assert ids["Qwen/Qwen3-8B"]["p"] == 7.0
     # models with almost no usage are left out of recommendations
     assert "someone/my-assistant" not in ids
+
+
+def test_size_from_name_when_hub_count_is_wrong():
+    from hfo.advisor import size_b, TEST_REPO_RX
+    assert size_b({"id": "lab/Model-35B", "parameters": 1_000_000}) == 35.0  # broken metadata
+    assert size_b({"id": "lab/Qwen3-30B-A3B", "parameters": 30.5e9}) == 30.5  # "A3B" is not the size
+    assert size_b({"id": "lab/Tiny-270M", "parameters": None}) == 0.27
+    assert size_b({"id": "lab/no-size", "parameters": None}) is None
+    assert TEST_REPO_RX.search("trl-internal-testing/tiny-Qwen2ForCausalLM-2.5")
+    assert not TEST_REPO_RX.search("Qwen/Qwen3-8B")

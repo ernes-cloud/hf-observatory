@@ -12,6 +12,7 @@ It is built entirely on the open dataset
 | Section | What it shows |
 |---|---|
 | **Home** | What the site is for in plain words, today's key numbers, “What do you want to do?” shortcuts to each section, this week's summary and the key terms. |
+| **Model advisor** | “What should I run on my hardware?” Pick a use (chat, coding, agents & tool calling, reasoning, vision, RAG/embeddings, speech, image generation, creative writing), your GPU(s) and how many, or your Mac's unified memory, or CPU + RAM (with optional overflow into system RAM for Ollama), the runtime (Ollama, LM Studio, llama.cpp, MLX, vLLM, Transformers), the context length and a size range. It ranks models that fit, picks the best quantization for each, estimates memory including the KV cache, and gives the command to run it (`ollama run hf.co/…:Q4_K_M`, `mlx_lm.chat`, `vllm serve`…). |
 | **Overview** | Totals (live, removed, gated, % open license), top publishers by model count and by 30-day downloads, tasks, licenses, sizes, formats, languages, families and models created per week. |
 | **Model finder** | “Which model fits my needs?” Filter by text, task, language, commercial-use license, hardware budget (“fits in 16 GB”), format (GGUF, MLX, ONNX…), hide gated models; sort by downloads, likes, trending, newest or size. Each result has a short English model card and a link to the Hub. Filters are kept in the URL, so searches can be shared. |
 | **Trends** | Download evolution across past releases (7/14/30-day windows): rising, fading, breakout and newcomer models with sparklines, publishers gaining or losing ground, adoption by family (Qwen, Llama, Mistral, Gemma…) as share of downloads or model count, and what is trending now. |
@@ -20,6 +21,8 @@ It is built entirely on the open dataset
 | **Newsletter** | A weekly English summary generated automatically by comparing two releases a week apart: new models, removals, notable moves, busiest publishers. Monday-to-Monday issues are archived; a “Last 7 days” issue refreshes with every update. Available as Markdown and as an RSS feed (`data/newsletter/feed.xml` on the site). |
 
 ![Home](docs/screenshots/home.png)
+
+![Model advisor](docs/screenshots/advisor.png)
 
 ![Overview](docs/screenshots/overview.png)
 
@@ -135,6 +138,10 @@ npm run screenshots                       # refresh docs/screenshots/
 * Family trees use the Hub tags `base_model:<relation>:<parent>`; models that only declare `base_model` count as
   “other derivatives”. Parents are matched case-insensitively and only live models are counted as derivatives.
   Very large families are trimmed in the tree (top 120 children of the base, top 25 below that, 4 generations).
+* The advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
+  ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size) + 0.5 GB; usable memory is the VRAM minus
+  ~0.8 GB, or about 67–75% of a Mac's unified memory. GGUF/MLX builds are only linked when their repository name
+  is the original name plus quantization markers, so fine-tunes are never offered as “the GGUF of” a model.
 * Removal dates are when the radar *detected* the 404, not when the author deleted the model.
 * Trends compare the first export of each day (`vN.0.0`). Rankings only include models present in both
   snapshots, so the radar adding models over time is not mistaken for growth. Releases v29–v34 were rebuilt by

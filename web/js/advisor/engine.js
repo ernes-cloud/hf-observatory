@@ -94,7 +94,7 @@ export function serverLadder(arch, m = {}) {
   if (self) return SELF_FORMATS[self] && (self !== 'nvfp4' || arch === 'blackwell') ? [SELF_FORMATS[self]] : [];
   const half = arch === 'turing' ? 'FP16' : 'BF16';
   if (arch === 'blackwell') return [[half, 2.0, 1, null], ['FP8', 1.05, 0.99, 'fp8'], ['NVFP4', 0.56, 0.95, 'nvfp4']];
-  if (['hopper', 'ada', 'cdna3'].includes(arch)) return [[half, 2.0, 1, null], ['FP8', 1.05, 0.99, 'fp8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
+  if (['hopper', 'ada', 'cdna3', 'cdna4'].includes(arch)) return [[half, 2.0, 1, null], ['FP8', 1.05, 0.99, 'fp8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
   return [[half, 2.0, 1, null], ['INT8 (W8A16)', 1.05, 0.985, 'int8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
 }
 export const isGptOss = (m) => m.fam === 'GPT-OSS' || /(^|\/)gpt-oss-\d+b$/i.test(m.id || '');
@@ -210,8 +210,35 @@ export function kvBasis(m) {
   const active = m.a || (m.moe ? m.p * 0.12 : m.p);
   return active < m.p ? Math.sqrt(active * m.p) : m.p;
 }
-/** KV cache (GB) of one sequence for a model, including its attention type (MLA, hybrid, sliding window). */
-export const kvOf = (m, ctx) => kvGB(kvBasis(m), ctx) * (m?.kvf ?? 1);
+/**
+ * KV cache (GB) of one sequence. Exact when the model's config.json was read (kvb: bytes per token in
+ * full-attention layers, kvs: in sliding-window layers capped at `win` tokens); otherwise estimated from
+ * the size and the attention type (MLA, hybrid, sliding window).
+ */
+export function kvOf(m, ctx) {
+  if (m?.kvb != null) return (m.kvb * ctx + (m.kvs || 0) * Math.min(ctx, m.win || ctx)) / 1e9;
+  return kvGB(kvBasis(m), ctx) * (m?.kvf ?? 1);
+}
+
+/** MoE routing and scattered expert reads cost some of the bandwidth advantage (calibrated on llama.cpp). */
+export const MOE_EFF = 0.85;
+
+/**
+ * Prompt reading speed (tokens/s): compute-bound, 2 FLOPs per active parameter per token. The share of
+ * the spec-sheet TFLOPS a runtime reaches is calibrated on published llama.cpp results for the DGX Spark
+ * and Apple Silicon; GPU servers (vLLM / SGLang) batch the prompt better and use all cards in parallel.
+ */
+export function prefillOf(m, where, b, runtime) {
+  const active = m.a || (m.moe ? m.p * 0.12 : m.p);
+  if (!active) return null;
+  const server = ['vllm', 'sglang'].includes(runtime);
+  let util = b.kind === 'mac' ? 0.6 : b.kind === 'unified' ? (b.vendor === 'nvidia' ? (server ? 0.3 : 0.15) : 0.3)
+    : b.vendor === 'nvidia' ? (server ? 0.55 : 0.45) : 0.3;
+  let tf = (b.tf || 0) * util * (server && b.n > 1 ? b.n * 0.8 : 1);
+  if (where === 'cpu' || !b.tf) tf = (b.slowTf || 1) * 0.5;
+  else if (where === 'split') tf = 1 / (0.7 / tf + 0.3 / ((b.slowTf || 1) * 0.5)); // layers left in RAM are slow
+  return Math.min(50000, (tf * 1e12) / (2 * active * 1e9));
+}
 
 export function memNeeded(p, bpp, s, m = null) {
   const perSeq = m ? kvOf(m, s.ctx) : kvGB(p, s.ctx);
@@ -237,7 +264,7 @@ export function budgetOf(s) {
   if (s.hw === 'mac') {
     const chip = MAC_CHIPS.find((c) => c.id === s.chip) || MAC_CHIPS[0];
     const usable = s.mac * (s.mac >= 64 ? 0.75 : 0.67);
-    return { kind: 'mac', arch: 'apple', vendor: 'apple', fast: usable, fastBw: chip.bw, slow: 0, slowBw: 0, n: 1,
+    return { kind: 'mac', arch: 'apple', vendor: 'apple', fast: usable, fastBw: chip.bw, tf: chip.tf, slow: 0, slowBw: 0, slowTf: 0, n: 1,
       label: `${chip.name} Mac · ${s.mac} GB unified memory`,
       detail: `macOS lets the GPU use about ${Math.round(usable)} GB of it (raise it with sudo sysctl iogpu.wired_limit_mb). Bandwidth ${chip.bw} GB/s.` };
   }
@@ -248,20 +275,20 @@ export function budgetOf(s) {
     const linked = Math.min(Math.max(1, s.nunits || 1), u.cluster || 1);
     // Ollama, LM Studio and llama.cpp run on one machine: only vLLM / SGLang can use two linked units.
     const n = linked > 1 && !['vllm', 'sglang', 'any'].includes(s.runtime) ? 1 : linked;
-    return { kind: 'unified', id: u.id, arch: u.arch, vendor: u.vendor, arm: !!u.arm, fast: u.usable * n, fastBw: u.bw, slow: 0, slowBw: 0, n,
+    return { kind: 'unified', id: u.id, arch: u.arch, vendor: u.vendor, arm: !!u.arm, fast: u.usable * n, fastBw: u.bw, tf: u.tf, slow: 0, slowBw: 0, slowTf: 0, n,
       label: `${n > 1 ? `${n}× ` : ''}${u.name}`,
       detail: `about ${Math.round(u.usable * n)} GB usable for models, ${u.bw} GB/s${n > 1 ? ' per unit' : ''}, ${ARCH_LABEL[u.arch]}. ${u.note}${linked > n ? ` ${RUNTIMES[s.runtime]?.label || 'This runtime'} runs on one unit: pick vLLM or SGLang to use both.` : ''}` };
   }
   if (s.hw === 'cpu') {
     const usable = Math.max(1, s.ram * 0.7 - 2);
-    return { kind: 'cpu', arch: 'cpu', vendor: 'cpu', fast: 0, fastBw: 0, slow: usable, slowBw: cpu.bw, n: 1,
+    return { kind: 'cpu', arch: 'cpu', vendor: 'cpu', fast: 0, fastBw: 0, tf: 0, slow: usable, slowBw: cpu.bw, slowTf: cpu.tf, n: 1,
       label: `CPU only · ${s.ram} GB RAM`, detail: `about ${Math.round(usable)} GB usable, ${cpu.bw} GB/s (${cpu.name}). Fine for small models; large ones run at a few words per second.` };
   }
-  const g = s.gpu === 'custom' ? { name: `${s.customVram} GB GPU`, mem: +s.customVram || 8, bw: +s.customBw || 400, arch: s.customArch || 'ada', vendor: 'nvidia' } : (gpuById(s.gpu) || gpuById('rtx-4090'));
+  const g = s.gpu === 'custom' ? { name: `${s.customVram} GB GPU`, mem: +s.customVram || 8, bw: +s.customBw || 400, arch: s.customArch || 'ada', vendor: 'nvidia', tf: Math.round((+s.customBw || 400) * 0.16) } : (gpuById(s.gpu) || gpuById('rtx-4090'));
   const n = Math.max(1, s.ngpu || 1);
   const usable = Math.max(1, g.mem * n * (n > 1 ? 0.94 : 0.96) - 0.8 * n);
   const slow = s.offload ? Math.max(0, s.ram * 0.7 - 4) : 0;
-  return { kind: 'gpu', arch: g.arch, vendor: g.vendor, fast: usable, fastBw: g.bw, slow, slowBw: cpu.bw, n,
+  return { kind: 'gpu', arch: g.arch, vendor: g.vendor, fast: usable, fastBw: g.bw, tf: g.tf, slow, slowBw: cpu.bw, slowTf: cpu.tf, n,
     label: `${n > 1 ? `${n}× ` : ''}${g.name}${n > 1 ? ` · ${g.mem * n} GB VRAM` : ` · ${g.mem} GB VRAM`}`,
     detail: `about ${Math.round(usable)} GB usable for the model, ${g.bw} GB/s per card, ${ARCH_LABEL[g.arch] || g.arch}${slow ? `; plus ~${Math.round(slow)} GB of system RAM for overflow (much slower)` : ''}.` };
 }
@@ -281,10 +308,12 @@ export function speedOf(activeP, bpp, s, b, where, runtime, kvSeq = null) {
   // of the window (conversations and agent runs grow into it), using the same estimate as memory.
   const kvRead = (kvSeq ?? kvGB(activeP, s.ctx)) * (KV_FACTOR[s.kv] ?? 1) * 0.35;
   const perToken = activeP * bpp + kvRead;
-  const eff = b.kind === 'cpu' ? 0.5 : b.kind === 'unified' ? 0.65 : 0.7;
+  // Share of the bandwidth a runtime turns into tokens, calibrated on published llama.cpp results
+  // (see tests/advisor-calibration.test.mjs): ~75% on GPUs and the DGX Spark, ~70% on Apple Silicon.
+  const eff = b.kind === 'cpu' ? 0.5 : b.kind === 'mac' ? 0.7 : b.kind === 'unified' ? (b.vendor === 'nvidia' ? 0.8 : 0.72) : 0.75;
   // Fixed per-token cost (kernel launches, sampling, scheduling) that bandwidth does not cover:
   // it keeps small and MoE models from reaching unrealistic speeds.
-  const fixed = where === 'cpu' || b.kind === 'cpu' ? 0.004 : 0.0025;
+  const fixed = where === 'cpu' || b.kind === 'cpu' ? 0.004 : 0.002;
   if (where === 'gpu') return Math.min(250, 1 / (perToken / (eff * fastBandwidth(b, runtime)) + fixed));
   if (where === 'cpu') return Math.min(250, 1 / (perToken / (0.45 * b.slowBw) + fixed));
   // split: the share that does not fit runs from system RAM
@@ -331,8 +360,8 @@ export function fitModel(m, kind, s, b, runtime) {
     if (!where) continue;
     const bb = where === 'split' ? { ...b, slowNeed: need.total - b.fast } : b;
     // MoE routing and less regular memory access cost some of the theoretical speed-up.
-    const t = speedOf(active, bpp, s, bb, where, runtime, kvOf(m, s.ctx)) * (active < p ? 0.7 : 1);
-    options.push({ quant, bpp, qf: q, need, where, low: LOW_QUALITY.has(quant), tps: t, download: p * bpp, repo, onTheFly });
+    const t = speedOf(active, bpp, s, bb, where, runtime, kvOf(m, s.ctx)) * (active < p ? MOE_EFF : 1);
+    options.push({ quant, bpp, qf: q, need, where, low: LOW_QUALITY.has(quant), tps: t, pp: prefillOf(m, where, b, runtime), download: p * bpp, repo, onTheFly });
   }
   if (!options.length) return null;
   const target = targetSpeed(s.priority);
@@ -357,13 +386,15 @@ export function refit(r, s2, b, spec) {
   const pool = fit.where === 'gpu' ? b.fast : b.fast + b.slow;
   const active = m.a || (m.moe ? m.p * 0.12 : m.p);
   const bb = fit.where === 'split' ? { ...b, slowNeed: Math.max(0, total - b.fast) } : b;
-  const base = speedOf(active, fit.bpp, s2, bb, fit.where, r.rt, kvOf(m, s2.ctx)) * (active < m.p ? 0.7 : 1);
+  const base = speedOf(active, fit.bpp, s2, bb, fit.where, r.rt, kvOf(m, s2.ctx)) * (active < m.p ? MOE_EFF : 1);
+  const pp = prefillOf(m, fit.where, b, r.rt);
   return {
     ...fit,
     spec,
     need: { ...need, draft: extra || undefined, total },
     tpsBase: base,
     tps: spec ? withSpec(base, spec, s2.users) : base,
+    pp,
     fits: total <= pool + 1e-9,
   };
 }
@@ -427,7 +458,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (must.has('tools') && !has(m, 'tools') && !(data.tool_families.includes(m.fam) && has(m, 'chat'))) continue;
     if (must.has('vision') && !has(m, 'vision')) continue;
     if (must.has('reasoning') && !has(m, 'reasoning') && !thinkingOf(m)) continue;
-    if (must.has('longctx') && !has(m, 'longctx')) continue;
+    if (must.has('longctx') && !(m.mc ? m.mc >= 131072 : has(m, 'longctx'))) continue;
     if (isLLM && /(^|[-_/])base([-_]|$)/.test(name) && !has(m, 'chat')) continue;
     if (s.use === 'vision' && !has(m, 'vision')) continue;
     if (s.use === 'code' && !has(m, 'code') && !(has(m, 'chat') && data.tool_families.includes(m.fam))) continue;
@@ -438,20 +469,23 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     }
 
     let fit = null, kind = null, rt = null, specs = [];
+    // A model cannot use more context than it was built for: size its cache and commands to its limit.
+    const ctx = isLLM && m.mc ? Math.min(s.ctx, m.mc) : s.ctx;
+    const sm = ctx === s.ctx ? s : { ...s, ctx };
     if (isLLM) {
       if (m.p == null) continue;
       for (const k of kinds) {
         if (kinds.length > 1 && k === 'gguf' && !m.gguf) continue;
         if (kinds.length > 1 && k === 'mlx' && !m.mlx) continue;
         if (k === 'st' && !m.st) continue;
-        const f = fitModel({ ...m, moe: has(m, 'moe') }, k, s, b, s.runtime);
+        const f = fitModel({ ...m, moe: has(m, 'moe') }, k, sm, b, s.runtime);
         if (!f) continue;
         if (!fit || (f.where === 'gpu' && fit.where !== 'gpu') || (f.where === fit.where && f.tps > fit.tps * 1.15)) { fit = f; kind = k; }
       }
       if (!fit) continue;
       // Speculative decoding: faster single-user generation for a little extra memory (the draft).
       rt = s.runtime !== 'any' ? s.runtime : kind === 'st' ? 'vllm' : kind === 'gguf' ? 'llamacpp' : kind;
-      specs = specOptions(m, rt, s);
+      specs = specOptions(m, rt, sm);
       const spec = s.spec !== 'off' ? specs[0] || null : null;
       if (spec) {
         const extra = spec.draftP * 2 * 1.1 + (spec.method === 'mtp' ? fit.need.weights * 0.03 : 0);
@@ -487,7 +521,8 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (s.use === 'writing' && has(m, 'roleplay')) { rel += 3; why.push('Tuned for creative writing'); }
     if (s.use === 'vision' && has(m, 'computer')) rel += 0.5;
     if (['chat', 'agents', 'writing', 'reasoning'].includes(s.use)) rel += has(m, 'chat') ? 1 : -1.5;
-    if (s.ctx >= 65536 && has(m, 'longctx')) { rel += 1.5; why.push('Designed for long contexts'); }
+    if (ctx < s.ctx) { rel -= s.ctx / ctx >= 4 ? 3 : 1.5; why.push(`Built for up to ${fmtTokens(m.mc)} tokens of context, less than the ${fmtTokens(s.ctx)} you asked for`); }
+    else if (s.ctx >= 65536 && (m.mc ? m.mc >= 131072 : has(m, 'longctx'))) { rel += 1.5; why.push(m.mc ? `Handles up to ${fmtTokens(m.mc)} tokens of context` : 'Designed for long contexts'); }
     if (s.lang) {
       if (m.lang.includes(s.lang) || m.lang.includes('multilingual')) { rel += 1.5; why.push(`Declares ${s.langName || s.lang}`); } else if (m.lang.length) rel -= 1;
     }
@@ -521,7 +556,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (official) why.push('From the original lab');
     if (m.a) why.push(`Mixture of experts: ${m.a}B of ${round1(m.p)}B parameters work per token, so it runs like a ${m.a}B model`);
     else if (has(m, 'moe') && isLLM) why.push('Mixture of experts (active size not published): speed estimated at ~12% active');
-    out.push({ m: { ...m, moe: isMoe }, fit, kind, score, quality, why, rt, specs, reasoning: has(m, 'reasoning') });
+    out.push({ m: { ...m, moe: isMoe }, fit, kind, score, quality, why, rt, specs, ctx, reasoning: has(m, 'reasoning') });
   }
 
   out.sort((a, c) => c.score - a.score);
@@ -546,6 +581,8 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
 }
 
 const round1 = (x) => Math.round(x * 10) / 10;
+/** Context sizes the way models advertise them: 131072 → 128K. */
+export const fmtTokens = (n) => (n >= 1048576 ? `${round1(n / 1048576)}M` : `${Math.round(n / 1024)}K`);
 function fmtCompact(n) {
   if (n >= 1e6) return `${round1(n / 1e6)}M`;
   if (n >= 1e3) return `${round1(n / 1e3)}K`;

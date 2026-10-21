@@ -91,6 +91,8 @@ function checkResult(res, s, label, r) {
     if (must.includes('longctx')) assert.ok(hasCap(data, m, 'longctx'), where);
     if (must.includes('spec') && isLLM) assert.ok(fit.spec, `${where}: no speculative option`);
     if (!isLLM) continue;
+    if (m.mc) assert.ok(x.ctx <= m.mc, `${where}: context ${x.ctx} beyond the model's ${m.mc}`);
+    if (fit.pp != null) assert.ok(Number.isFinite(fit.pp) && fit.pp > 0, `${where}: prompt speed ${fit.pp}`);
     // fits the pool it claims to run from
     const pool = fit.where === 'gpu' ? b.fast : b.fast + b.slow;
     assert.ok(fit.need.total <= pool + 1e-6, `${where}: needs ${fit.need.total.toFixed(1)} GB of ${pool.toFixed(1)}`);

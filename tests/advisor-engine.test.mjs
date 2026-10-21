@@ -155,3 +155,22 @@ test('3 or 6 GPUs use pipeline parallel for what tensor parallel cannot split', 
   assert.deepEqual(parallelOf(6), { tp: 2, pp: 3 });
   assert.deepEqual(parallelOf(3), { tp: 1, pp: 3 });
 });
+
+test('config.json data: exact KV, sliding windows and a context the model supports', async () => {
+  const { kvOf, recommend } = await import('../web/js/advisor/engine.js');
+  const { commandsFor } = await import('../web/js/advisor/commands.js');
+  // gpt-oss-120b: 36 KiB per token in full layers + 36 KiB in 128-token sliding layers
+  const g = { p: 116.8, a: 5.1, kvb: 36864, kvs: 36864, win: 128 };
+  assert.equal(kvOf(g, 131072).toFixed(3), ((36864 * 131072 + 36864 * 128) / 1e9).toFixed(3));
+  // a 32K model asked for 128K: sized and launched at 32K, and told so
+  const data = { caps: ['chat', 'tools'], tool_families: [], models: [
+    { id: 'lab/Short-8B', task: 'text-generation', p: 8, a: null, fam: null, lf: 'oss', lic: 'apache-2.0', lang: [], dl: 5000, likes: 50, tr: 1, c: 20000, caps: 1, gated: false, st: true, gguf: null, mlx: null, q: null, kvb: 131072, mc: 32768 },
+  ] };
+  const s = { ...base, runtime: 'vllm', ctx: 131072, spec: 'off', must: '', archFilter: 'any' };
+  const { list, budget } = recommend(data, s);
+  assert.equal(list[0].ctx, 32768);
+  assert.ok(list[0].why.some((w) => /up to 32K/.test(w)));
+  const compose = commandsFor(list[0], s, budget, data.caps, null, [])[0].code;
+  assert.match(compose, /--max-model-len 32768/);
+  assert.ok(list[0].fit.pp > 0);
+});

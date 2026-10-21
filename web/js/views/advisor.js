@@ -43,7 +43,13 @@ let els = {};
 const gb = (x) => (x == null ? '–' : x < 10 ? `${x.toFixed(1)} GB` : `${Math.round(x)} GB`);
 const bill = (p) => (p == null ? '?' : p >= 1 ? `${p >= 100 ? Math.round(p) : +p.toFixed(1)}B` : `${Math.round(p * 1000)}M`);
 const sizeLabel = (v) => (v >= 1 ? `${v}B` : `${Math.round(v * 1000)}M`);
-const ctxLabel = (v) => (v >= 1048576 ? '1M' : `${v / 1024}K`);
+const ctxLabel = (v) => (v >= 1048576 ? `${+(v / 1048576).toFixed(1)}M` : `${Math.round(v / 1024)}K`);
+/** "Reads a 16K prompt in ≈ 4 s": prompts of half the window (at most 32K), the usual size for agents and RAG. */
+function ttftText(pp, ctx) {
+  const prompt = Math.min(32768, Math.max(1024, 2 ** Math.round(Math.log2(ctx / 2))));
+  const t = prompt / pp;
+  return `Reads a ${ctxLabel(prompt)}-token prompt in ≈ ${t < 1 ? '<1' : t < 10 ? t.toFixed(1) : int(Math.round(t))} s (${int(Math.round(pp / 10) * 10)} tokens/s)`;
+}
 const tps = (x) => (x == null ? '–' : x >= 200 ? '200+' : x >= 10 ? `${Math.round(x)}` : x.toFixed(1));
 
 /* --------------------------------------------------------------- state <-> URL */
@@ -342,7 +348,9 @@ function cfgHtml(r, o, b) {
   else if (think?.mode === 'effort') fields.push(sel('think', 'Reasoning effort', [['low', 'Low (fastest)'], ['medium', 'Medium'], ['high', 'High (best answers)']]));
   else if (think?.mode === 'always') fields.push('<p class="cfg-note">This model always thinks before answering.</p>');
   if (think && (think.vllmParser || think.sglangParser) && server) fields.push(chk('reasoningParser', 'Separate the thinking from the answer', '(reasoning parser)'));
-  fields.push(sel('ctx', 'Context window', CTX_STOPS.map((c) => [c, `${ctxLabel(c)} tokens`])));
+  const ctxStops = CTX_STOPS.filter((c) => !m.mc || c <= m.mc);
+  if (m.mc && !ctxStops.includes(m.mc)) ctxStops.push(m.mc);
+  fields.push(sel('ctx', 'Context window', ctxStops.map((c) => [c, `${ctxLabel(c)} tokens`]), m.mc ? `This model handles up to ${ctxLabel(m.mc)}.` : ''));
   fields.push(sel('users', 'Users at once', USER_STOPS.map((u) => [u, String(u)])));
   fields.push(sel('kv', 'KV cache', [['f16', '16-bit'], ['q8', '8-bit'], ['q4', '4-bit']]));
   if (server) {
@@ -420,6 +428,7 @@ function resultCard(r, i) {
         <span class="metric-label">Speed (estimate)</span>
         <span class="metric-value">${tps(fit.tps)} <small>tokens/s</small></span>
         <span class="metric-sub">≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute${fit.spec ? ` · ${tps(fit.tpsBase)} without ${esc(fit.spec.label)}` : ''}${+o.users > 1 ? ` · per user, ${o.users} at once` : ''}</span>
+        ${fit.pp ? `<span class="metric-sub" title="Time to first token: reading the prompt is limited by compute (TFLOPS), not memory bandwidth">${ttftText(fit.pp, +o.ctx)}</span>` : ''}
         <span class="metric-status">${sp[1]}</span>
       </div>` : ''}
       <div class="metric">
@@ -479,7 +488,7 @@ function summaryHtml(b) {
   const cap = isLLM ? capacity(kind, s, b) : [];
   return `<div class="budget">
     <div><p class="eyebrow">Your setup</p><p class="budget-main">${esc(b.label)}</p><p class="note">${esc(b.detail)}</p>
-      ${isLLM && b.kind !== 'mac' && b.kind !== 'cpu' && ['vllm', 'sglang', 'any'].includes(s.runtime) ? `<p class="note"><strong>Best GPU-server formats here:</strong> ${b.arch === 'blackwell' ? 'NVFP4 (native FP4 tensor cores) and FP8' : ['hopper', 'ada', 'cdna3'].includes(b.arch) ? 'FP8 (native), AWQ / GPTQ for 4-bit' : 'INT8 and AWQ / GPTQ 4-bit (no FP8 hardware)'}${b.arch === 'blackwell' ? '; MXFP4 for gpt-oss' : ''}.</p>` : ''}</div>
+      ${isLLM && b.kind !== 'mac' && b.kind !== 'cpu' && ['vllm', 'sglang', 'any'].includes(s.runtime) ? `<p class="note"><strong>Best GPU-server formats here:</strong> ${b.arch === 'blackwell' ? 'NVFP4 (native FP4 tensor cores) and FP8' : ['hopper', 'ada', 'cdna3', 'cdna4'].includes(b.arch) ? 'FP8 (native), AWQ / GPTQ for 4-bit' : 'INT8 and AWQ / GPTQ 4-bit (no FP8 hardware)'}${b.arch === 'blackwell' ? '; MXFP4 for gpt-oss' : ''}.</p>` : ''}</div>
     ${isLLM ? `<div><p class="eyebrow">Biggest model that fits ${b.fast ? 'fully in fast memory' : ''} · ${ctxLabel(s.ctx)} context${s.users > 1 ? ` × ${s.users} users` : ''}</p>
       <ul class="cap-list">${cap.map(([n, p]) => `<li><span>${esc(n)}</span><strong>${p >= 1 ? `≈ ${p >= 10 ? Math.round(p) : p.toFixed(1)}B` : '< 1B'}</strong></li>`).join('')}</ul></div>` : ''}
   </div>`;

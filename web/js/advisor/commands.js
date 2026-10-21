@@ -20,7 +20,7 @@ export function defaultOptions(r, s, b) {
     specTokens: r.fit.spec ? defaultSpecTokens(r.fit.spec.method) : 3,
     think: think?.mode === 'effort' ? 'medium' : s.think || 'default',
     reasoningParser: true,
-    ctx: s.ctx,
+    ctx: r.ctx ?? s.ctx, // already capped to what the model supports
     users: s.users,
     gpuUtil: b.kind === 'unified' ? 0.8 : 0.9,
     kv: s.kv,

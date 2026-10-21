@@ -16,7 +16,7 @@ It is built entirely on the open dataset
 | **Trends** | Download evolution across past releases (7/14/30-day windows): rising, fading, breakout and newcomer models with sparklines, publishers gaining or losing ground, adoption by family (Qwen, Llama, Mistral, Gemma…) as share of downloads or model count, and what is trending now. |
 | **Family trees** | Which base models spawn the most derivatives (fine-tunes, quantizations, adapters, merges), derivatives by family, and a navigable radial graph + collapsible tree per base model. |
 | **Graveyard** | Models removed from the Hub: who removes the most, how long they lived, removals per week, and how gated/unclear-license models compare with live ones. Searchable list of every removed model. |
-| **Newsletter** | A weekly English summary generated automatically by comparing two releases a week apart: new models, removals, notable moves, busiest publishers. Monday-to-Monday issues are archived; a “Last 7 days” issue refreshes with every update. Available as Markdown and as an [RSS feed](web/data/newsletter/feed.xml) on the site. |
+| **Newsletter** | A weekly English summary generated automatically by comparing two releases a week apart: new models, removals, notable moves, busiest publishers. Monday-to-Monday issues are archived; a “Last 7 days” issue refreshes with every update. Available as Markdown and as an RSS feed (`data/newsletter/feed.xml` on the site). |
 
 ![Overview](docs/screenshots/overview.png)
 
@@ -45,6 +45,7 @@ vN.0.0/models.jsonl.gz  (history)  ──►  one snapshot per day  ──► ag
   and writes small, pre-aggregated JSON files for each section. The ~250 MB bulk is never committed.
 * **`web/`** is a dependency-free static site: plain HTML, CSS and ES modules, with hand-written SVG/CSS
   charts. No build step and no runtime CDN, so it works offline once loaded and is trivial to host on GitHub Pages.
+* **`.github/workflows/`** rebuilds the data daily and deploys to GitHub Pages (see below).
 * **`tests/smoke.mjs`** opens every tab in headless Chromium (desktop light/dark and a 375 px phone) and fails
   on console errors, failed requests, sections that don’t render, or horizontal scrolling.
 
@@ -56,6 +57,31 @@ vN.0.0/models.jsonl.gz  (history)  ──►  one snapshot per day  ──► ag
 * **Column-oriented, dictionary-encoded finder index.** ~73k live models fit in one file without a backend.
 * **Data is built in CI and deployed as a Pages artifact, not committed.** The repository stays small and the
   history stays readable.
+
+## How the automatic update works
+
+`.github/workflows/deploy.yml` runs **every day at 07:23 UTC** (after the radar's 06:00 Madrid export is
+released), on every push to `main`, and on demand (*Actions → Build data and deploy site → Run workflow*):
+
+1. Runs the pipeline unit tests.
+2. Restores the cache of slim historical snapshots (`pipeline/.cache/snapshots`, ~2 MB per release).
+3. Runs `python pipeline/build.py`. It downloads the floating `latest` bulk plus any numbered release
+   it has not cached yet (normally just the newest one), then writes `web/data/` (~9 MB in total). Weekly
+   newsletter issues are regenerated deterministically from the immutable releases, so the archive
+   needs no storage of its own.
+4. Saves the snapshot cache for the next run.
+5. Runs the headless smoke test against the freshly built site. A broken build never gets deployed.
+6. Uploads `web/` as a Pages artifact and deploys it with `actions/deploy-pages`.
+
+Nothing generated is committed, so the repository history stays free of data churn. The first run (or a
+run after the cache expires, which happens after 7 days without runs) downloads ~45 releases and takes
+around 15–20 minutes. Later runs take a couple of minutes.
+
+`.github/workflows/ci.yml` runs on pull requests: unit tests, a build with a short history, and the smoke test.
+
+**One-time setup:** in the repository settings, set *Pages → Build and deployment → Source* to
+**GitHub Actions**. If you deploy the site somewhere other than `https://<owner>.github.io/hf-observatory/`,
+set the `SITE_URL` environment variable in the workflow so that links in the RSS feed point to the right place.
 
 ## Run locally
 

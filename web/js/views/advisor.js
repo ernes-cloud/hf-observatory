@@ -18,14 +18,14 @@ const PAGE = 10;
 
 const DEFAULT = {
   use: 'chat', agent: 'coding', ragPart: 'both',
-  hw: 'gpu', gpu: 'rtx-4090', customVram: 16, customBw: 500, ngpu: 1, chip: 'm4-max', mac: 64, unified: 'dgx-spark', nunits: 1,
+  hw: 'gpu', gpu: 'rtx-4090', customVram: 16, customBw: 500, ngpu: 1, gpu2: '', ngpu2: 1, chip: 'm4-max', mac: 64, unified: 'dgx-spark', nunits: 1,
   ram: 32, cpuMem: 'ddr5', offload: false,
   runtime: 'ollama', ctx: 8192, users: 1, kv: 'f16', spec: 'auto', think: 'default',
   sizeLo: 0, sizeHi: SIZE_STOPS.length - 1, priority: 40, archFilter: 'any', must: '',
   lang: '', commercial: false, hideGated: false, uncensored: false, officialOnly: false, sort: 'best',
 };
 // short URL keys so a configuration can be shared
-const KEYS = { use: 'u', agent: 'ag', ragPart: 'rp', hw: 'hw', gpu: 'g', customVram: 'cv', customBw: 'cb', ngpu: 'n', chip: 'ch', mac: 'mm', unified: 'uf', nunits: 'nu',
+const KEYS = { use: 'u', agent: 'ag', ragPart: 'rp', hw: 'hw', gpu: 'g', customVram: 'cv', customBw: 'cb', ngpu: 'n', gpu2: 'g2', ngpu2: 'n2', chip: 'ch', mac: 'mm', unified: 'uf', nunits: 'nu',
   ram: 'r', cpuMem: 'cm', offload: 'of', runtime: 'rt', ctx: 'c', users: 'us', kv: 'kv', spec: 'sp', think: 'th', sizeLo: 'lo', sizeHi: 'hi', priority: 'pr', archFilter: 'af', must: 'mu', lang: 'l',
   commercial: 'co', hideGated: 'hg', uncensored: 'un', officialOnly: 'oo', sort: 's' };
 
@@ -81,6 +81,10 @@ function sanitize(input) {
   const g = gpuById(s.gpu);
   const maxUnits = g?.unified ? (g.cluster || 1) : 8;
   s.ngpu = num(Math.round(s.ngpu), 1, maxUnits, 1);
+  // a second, different card: same vendor, discrete GPUs only
+  const g2 = gpuById(s.gpu2);
+  s.gpu2 = g && g2 && !g.unified && !g2.unified && g2.vendor === g.vendor && g2.id !== g.id && s.hw === 'gpu' ? g2.id : '';
+  s.ngpu2 = s.gpu2 ? num(Math.round(s.ngpu2), 1, 8, 1) : 1;
   s.chip = MAC_CHIPS.some((c) => c.id === s.chip) ? s.chip : DEFAULT.chip;
   const sizes = MAC_CHIPS.find((c) => c.id === s.chip).sizes;
   if (!sizes.includes(+s.mac)) s.mac = sizes.find((x) => x >= +s.mac) || sizes[sizes.length - 1];
@@ -157,6 +161,10 @@ function formHtml() {
         <div class="field" data-hw="custom"><label for="a-cb">Bandwidth (GB/s)</label><input type="text" inputmode="decimal" id="a-cb" name="customBw"></div>
         <div class="field" data-hw="gpu"><label for="a-ngpu" id="a-ngpu-label">Number of cards</label>
           <select id="a-ngpu" name="ngpu"></select></div>
+        <div class="field wide2" data-hw="mix"><label for="a-gpu2">Plus a different card <span class="muted">(optional)</span></label>
+          <select id="a-gpu2" name="gpu2"></select></div>
+        <div class="field" data-hw="mix2"><label for="a-ngpu2">How many of those</label>
+          <select id="a-ngpu2" name="ngpu2">${[1, 2, 3, 4].map((n) => option(n, n === 1 ? '1 card' : `${n} cards`, 1)).join('')}</select></div>
         <div class="field" data-hw="mac"><label for="a-chip">Chip</label>
           <select id="a-chip" name="chip">${MAC_CHIPS.map((c) => option(c.id, `${c.name} · ${c.bw} GB/s`, state.chip)).join('')}</select></div>
         <div class="field" data-hw="mac"><label for="a-mac">Unified memory</label>
@@ -249,6 +257,12 @@ function syncForm() {
   const units = g?.unified ? (g.cluster || 1) : 8;
   f.ngpu.innerHTML = (g?.unified ? [1, 2].slice(0, units) : [1, 2, 3, 4, 6, 8]).map((n) => option(n, g?.unified ? (n === 1 ? '1 unit' : `${n} units linked`) : (n === 1 ? '1 card' : `${n} cards`), state.ngpu)).join('');
   els.ngpuLabel.textContent = g?.unified ? 'Units' : 'Number of cards';
+  // second card: same vendor, discrete only
+  f.gpu2.innerHTML = option('', 'None', state.gpu2) + GPU_GROUPS.filter((grp) => !grp.items[0]?.unified)
+    .map((grp) => ({ ...grp, items: grp.items.filter((x) => g && x.vendor === g.vendor && x.id !== g.id) }))
+    .filter((grp) => grp.items.length)
+    .map((grp) => `<optgroup label="${esc(grp.group)}">${grp.items.map((x) => option(x.id, `${x.name} · ${x.mem} GB`, state.gpu2)).join('')}</optgroup>`).join('');
+  f.ngpu2.value = String(state.ngpu2);
   f.chip.value = state.chip;
   f.mac.innerHTML = MAC_CHIPS.find((c) => c.id === state.chip).sizes.map((x) => option(x, `${x} GB`, state.mac)).join('');
   f.ram.value = String(state.ram); f.cpuMem.value = state.cpuMem;
@@ -273,7 +287,7 @@ function readForm(changed) {
   state = {
     ...state,
     use: val('use') || 'chat', agent: val('agent') || 'coding', ragPart: val('ragPart') || 'both', hw: val('hw') || 'gpu',
-    gpu: f.gpu.value, customVram: Math.max(1, parseFloat(f.customVram.value) || 8), customBw: Math.max(20, parseFloat(f.customBw.value) || 400),
+    gpu: f.gpu.value, gpu2: changed === 'gpu' ? '' : f.gpu2.value, ngpu2: +f.ngpu2.value, customVram: Math.max(1, parseFloat(f.customVram.value) || 8), customBw: Math.max(20, parseFloat(f.customBw.value) || 400),
     ngpu: changed === 'gpu' ? 1 : +f.ngpu.value, chip: f.chip.value, mac: +f.mac.value,
     ram: +f.ram.value, cpuMem: f.cpuMem.value, offload: f.offload.checked, runtime: f.runtime.value, kv: f.kv.value, spec: f.spec.value, think: f.think.value,
     archFilter: val('archFilter') || 'any', must: [...f.querySelectorAll('input[name="must"]:checked')].map((x) => x.value).join(','),
@@ -298,7 +312,9 @@ function decorate() {
     const k = x.dataset.hw;
     const uni = s.hw === 'gpu' && gpuById(s.gpu)?.unified;
     x.hidden = !(k === s.hw || (k === 'custom' && s.hw === 'gpu' && s.gpu === 'custom') || (k === 'ram' && ((s.hw === 'gpu' && !uni) || s.hw === 'cpu'))
-      || (k === 'offload' && s.hw === 'gpu' && !uni));
+      || (k === 'offload' && s.hw === 'gpu' && !uni)
+      || (k === 'mix' && s.hw === 'gpu' && !uni && s.gpu !== 'custom')
+      || (k === 'mix2' && s.hw === 'gpu' && !!s.gpu2));
   });
   f.querySelectorAll('[data-llm]').forEach((x) => { x.hidden = !isLLM; });
   [...f.runtime.options].forEach((o) => {
@@ -389,6 +405,7 @@ function resultCard(r, i) {
   const used = fit.need ? Math.min(100, (fit.need.total / pool) * 100) : null;
   const status = !fit.fits ? ['bad', 'Does not fit with these settings: lower the context, users or KV precision']
     : fit.where === 'split' ? ['warn', 'Part of it runs from system RAM']
+    : fit.where === 'moe-cpu' ? ['warn', 'Experts in system RAM, the rest on the GPU']
     : fit.where === 'cpu' && b.kind !== 'cpu' ? ['warn', 'Runs on the CPU']
       : used > 92 ? ['tight', 'Fits, but tight'] : ['ok', 'Fits comfortably'];
   const sp = fit.tps != null ? speedLabel(fit.tps) : null;
@@ -420,14 +437,14 @@ function resultCard(r, i) {
       <div class="metric fit-${status[0]}">
         <span class="metric-label">Memory</span>
         <span class="metric-value">${fit.need ? `≈ ${gb(fit.need.total)}` : 'small'}</span>
-        <span class="metric-sub">${esc(fit.quant)}${isLLM && fit.need ? ` · ${gb(fit.need.weights)} weights + ${gb(fit.need.kv)} context${fit.need.draft ? ` + ${gb(fit.need.draft)} ${fit.spec?.draft ? 'draft' : 'MTP'}` : ''}` : ''}</span>
+        <span class="metric-sub">${esc(fit.quant)}${isLLM && fit.need ? ` · ${gb(fit.need.weights)} weights + ${gb(fit.need.kv)} context${fit.need.draft ? ` + ${gb(fit.need.draft)} ${fit.spec?.draft ? 'draft' : 'MTP'}` : ''}` : ''}${fit.where === 'moe-cpu' && fit.need?.ram ? ` · ${gb(fit.need.gpu)} on the GPU, ${gb(fit.need.ram)} of experts in RAM` : ''}</span>
         ${used != null ? `<div class="meter" role="img" aria-label="Uses about ${Math.round(used)}% of your memory"><span style="width:${used.toFixed(1)}%"></span></div>` : ''}
         <span class="metric-status">${status[1]}</span>
       </div>
       ${isLLM && sp ? `<div class="metric speed-${sp[0]}">
         <span class="metric-label">Speed (estimate)</span>
         <span class="metric-value">${tps(fit.tps)} <small>tokens/s</small></span>
-        <span class="metric-sub">≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute${fit.spec ? ` · ${tps(fit.tpsBase)} without ${esc(fit.spec.label)}` : ''}${+o.users > 1 ? ` · per user, ${o.users} at once` : ''}</span>
+        <span class="metric-sub">≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute${fit.spec ? ` · ${tps(fit.tpsBase)} without ${esc(fit.spec.label)}` : ''}${+o.users > 1 ? ` · per user with ${o.users} at once, ≈ ${int(Math.round(fit.tps * o.users))} tokens/s in total` : ''}</span>
         ${fit.pp ? `<span class="metric-sub" title="Time to first token: reading the prompt is limited by compute (TFLOPS), not memory bandwidth">${ttftText(fit.pp, +o.ctx)}</span>` : ''}
         <span class="metric-status">${sp[1]}</span>
       </div>` : ''}
@@ -814,7 +831,7 @@ export async function render(section, params) {
     const b = e.target.closest('[data-preset]');
     if (!b) return;
     const p = PRESETS[+b.dataset.preset].state;
-    state = sanitize({ ...state, offload: false, ngpu: 1, ...p, runtime: p.runtime || (p.hw === 'mac' ? 'mlx' : state.runtime === 'mlx' ? 'ollama' : state.runtime) });
+    state = sanitize({ ...state, offload: false, ngpu: 1, gpu2: '', ngpu2: 1, ...p, runtime: p.runtime || (p.hw === 'mac' ? 'mlx' : state.runtime === 'mlx' ? 'ollama' : state.runtime) });
     syncForm();
     b.setAttribute('aria-pressed', 'true');
     refresh();

@@ -161,6 +161,14 @@ npm run screenshots                       # refresh docs/screenshots/
 * **Speed is calibrated** on published llama.cpp results (Apple Silicon M1–M4, DGX Spark):
   `tests/advisor-calibration.test.mjs` fails if generation drifts more than 25% or prompt reading more than 50%
   from them. Prompt reading (time to first token) uses each GPU's dense FP16 tensor TFLOPS.
+* **Mixture-of-experts models larger than the GPU** can keep their expert weights in system RAM with llama.cpp
+  (`--n-cpu-moe N`, or `--cpu-moe`) while attention, shared weights and the context stay on the GPU; the advisor
+  compares that with splitting whole layers (what Ollama does) and recommends the faster one, with the flag.
+* **Several users**: one pass over the weights serves every user in the batch, but each user's cache is read and
+  a MoE touches more experts as the batch grows; past that, the GPU's compute caps the total. Cards show the speed
+  per user and the total.
+* **Two kinds of card** (e.g. RTX 4090 + RTX 3090): llama.cpp / Ollama use all the memory and the layers take turns
+  at each card's bandwidth; vLLM / SGLang tensor parallel counts every card as the smaller and slower one.
 * Without config data, the advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
   ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size; for mixture-of-experts models with the
   geometric mean of active and total parameters, and scaled by the attention type read from the Hub

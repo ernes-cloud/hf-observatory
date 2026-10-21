@@ -99,6 +99,11 @@ function checkResult(res, s, label, r) {
     assert.ok(Number.isFinite(fit.tps) && fit.tps > 0 && fit.tps <= 250 * 3, `${where}: tps ${fit.tps}`);
     if (b.kind === 'cpu') assert.equal(fit.where, 'cpu', where);
     if (fit.where === 'split') assert.ok(b.slow > 0, `${where}: split without offload`);
+    if (fit.where === 'moe-cpu') {
+      assert.ok(kind === 'gguf' && (m.a || m.moe) && b.slow > 0, `${where}: experts in RAM only for MoE GGUF with RAM allowed`);
+      assert.ok(fit.need.gpu <= b.fast + 1e-6 && fit.need.ram <= b.slow + 1e-6, `${where}: ${fit.need.gpu} GB GPU / ${fit.need.ram} GB RAM`);
+    }
+    if (b.mixed && ['vllm', 'sglang'].includes(s.runtime)) assert.equal(b.n, s.ngpu + s.ngpu2, where);
     // the repository you are sent to
     if (kind === 'st') {
       const labels = serverLadder(b.arch, m).map(([q]) => q);
@@ -143,6 +148,9 @@ test('advisor invariants hold for every machine, use and runtime', { skip: !data
         const g = allGpus().find((x) => x.id === gpu);
         s.ngpu = g.unified ? 1 + Math.floor(r() * (g.cluster || 1)) : pick(r, [1, 1, 2, 4, 8]);
         if (g.unified) s.offload = false;
+        // sometimes a second, different card of the same vendor
+        const others = allGpus().filter((x) => !x.unified && x.vendor === g.vendor && x.id !== g.id);
+        if (!g.unified && others.length && r() < 0.25) { s.gpu2 = pick(r, others).id; s.ngpu2 = pick(r, [1, 1, 2]); }
       }
       const label = `${hw}:${gpu || s.chip || ''}×${s.ngpu} ${s.use}/${s.runtime} ctx${s.ctx} u${s.users} p${s.priority}${s.must ? ` must=${s.must}` : ''} ${s.archFilter}`;
       const res = recommend(data, s);

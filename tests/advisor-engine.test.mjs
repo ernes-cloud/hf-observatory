@@ -174,3 +174,53 @@ test('config.json data: exact KV, sliding windows and a context the model suppor
   assert.match(compose, /--max-model-len 32768/);
   assert.ok(list[0].fit.pp > 0);
 });
+
+test('a MoE too big for the GPU keeps its experts in RAM (llama.cpp --n-cpu-moe), faster than splitting layers', async () => {
+  const { budgetOf, fitModel } = await import('../web/js/advisor/engine.js');
+  const { commandsFor } = await import('../web/js/advisor/commands.js');
+  const s = { ...base, gpu: 'rtx-4090', ram: 64, cpuMem: 'ddr5', offload: true, runtime: 'llamacpp', ctx: 32768 };
+  const b = budgetOf(s);
+  const gptoss = { id: 'openai/gpt-oss-120b', p: 116.8, a: 5.1, moe: true, nl: 36, kvb: 36864, kvs: 36864, win: 128, gguf: 'ggml-org/gpt-oss-120b-GGUF', fam: 'GPT-OSS' };
+  const f = fitModel(gptoss, 'gguf', s, b, 'llamacpp');
+  assert.equal(f.where, 'moe-cpu');
+  assert.ok(f.cpuMoe > 0 && f.cpuMoe <= 36);
+  assert.ok(f.need.gpu <= b.fast && f.need.ram <= b.slow);
+  // users report ~25-35 tok/s for this setup with DDR5
+  assert.ok(f.tps > 15 && f.tps < 45, `gpt-oss-120b on a 4090 + DDR5: ${f.tps}`);
+  const split = fitModel(gptoss, 'gguf', { ...s, runtime: 'ollama' }, b, 'ollama');
+  assert.equal(split.where, 'split'); // Ollama cannot do it
+  assert.ok(f.tps > split.tps * 1.3);
+  const r = { m: { ...gptoss, caps: 1 }, fit: f, kind: 'gguf', rt: 'llamacpp', specs: [], ctx: 32768 };
+  const cmd = commandsFor(r, { ...s, use: 'chat' }, b, ['chat'], null, [])[0].code;
+  assert.match(cmd, new RegExp(`--n-cpu-moe ${f.cpuMoe}`));
+});
+
+test('several users share each pass over the weights: total throughput grows, per-user speed drops', async () => {
+  const { budgetOf, speedOf } = await import('../web/js/advisor/engine.js');
+  const s = { ...base, gpu: 'h100-sxm', ngpu: 1, runtime: 'vllm' };
+  const b = budgetOf(s);
+  const one = speedOf(8, 1.05, { ...s, users: 1 }, b, 'gpu', 'vllm', 1);
+  const many = speedOf(8, 1.05, { ...s, users: 32 }, b, 'gpu', 'vllm', 1);
+  assert.ok(many < one, 'each user gets less');
+  assert.ok(many * 32 > one * 5, 'but the server produces far more in total');
+  // MoE: more users touch more experts
+  const moe1 = speedOf(3, 1.05, { ...s, users: 1 }, b, 'gpu', 'vllm', 1, 30);
+  const moe16 = speedOf(3, 1.05, { ...s, users: 16 }, b, 'gpu', 'vllm', 1, 30);
+  assert.ok(moe16 < moe1 * 0.7);
+});
+
+test('two different cards: llama.cpp uses all their memory, vLLM counts every card as the smaller one', async () => {
+  const { budgetOf, runtimeKinds } = await import('../web/js/advisor/engine.js');
+  const s = { ...base, gpu: 'rtx-4090', ngpu: 1, gpu2: 'rtx-3090', ngpu2: 1 };
+  const gguf = budgetOf({ ...s, runtime: 'llamacpp' });
+  assert.ok(gguf.fast > 42 && gguf.fast < 46); // ~21.8 GB usable on each 24 GB card
+  assert.ok(gguf.fastBw > 936 && gguf.fastBw < 1008);
+  assert.equal(gguf.arch, 'ampere'); // formats of the older card
+  const tp = budgetOf({ ...s, runtime: 'vllm' });
+  assert.equal(tp.n, 2);
+  assert.equal(tp.fastBw, 936);
+  assert.deepEqual(runtimeKinds({ ...s, hw: 'gpu', runtime: 'any' }), ['gguf']);
+  // 4090 (24 GB) + 4060 Ti 16 GB under vLLM: two shards of the smaller card
+  const small = budgetOf({ ...s, gpu2: 'rtx-4060-ti-16-gb', runtime: 'vllm' });
+  assert.ok(small.fast < 2 * 16);
+});

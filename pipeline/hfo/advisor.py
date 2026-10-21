@@ -338,6 +338,8 @@ def add_architecture(out: list[dict], cache) -> None:
         if not c:
             continue
         m["kvb"] = c["kvb"]
+        if c.get("nl"):
+            m["nl"] = c["nl"]
         if c.get("kvs"):
             m["kvs"], m["win"] = c["kvs"], c["win"]
         if c.get("mc"):

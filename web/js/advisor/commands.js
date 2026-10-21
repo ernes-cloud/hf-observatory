@@ -421,7 +421,8 @@ export function commandsFor(r, s, b, caps, opts, specs = [], stack = null) {
     ? 'Thinking is off for every request; a client can still turn it on per request with <code>"chat_template_kwargs": {"enable_thinking": true}</code>.'
     : think?.mode === 'effort' ? `Reasoning effort “${esc(o.think)}”; clients can also send <code>"reasoning_effort"</code> per request.` : '';
   // gpt-oss GGUFs hold one MXFP4 file: no quant suffix to choose
-  const ggufQ = isGptOss(m) ? null : QUANTS.gguf.find(([n]) => n === fit.quant) ? fit.quant : 'Q4_K_M';
+  // the file to run: the card's GGUF quant, or what a single-quant upload holds, or the usual Q4_K_M
+  const ggufQ = isGptOss(m) ? null : kind === 'gguf' ? fit.quant : m.gq?.[0] || 'Q4_K_M';
   const repo = m.gguf;
   const tabs = {};
   if (repo) {

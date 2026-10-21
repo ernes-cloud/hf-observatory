@@ -75,7 +75,8 @@ test('recommend ranks tool-calling models first for function-calling agents and 
   const data = { caps: ['chat', 'tools', 'code', 'reasoning', 'vision', 'roleplay', 'uncensored', 'moe', 'embed', 'math', 'computer', 'swe', 'sql', 'longctx', 'rerank'], tool_families: ['Qwen'],
     models: [
       { id: 'a/plain-chat-8b', task: 'text-generation', p: 8, lf: 'oss', lang: [], dl: 50000, likes: 100, tr: 0, c: 0, caps: 1, gguf: 'a/plain-chat-8b-GGUF', st: true },
-      { id: 'b/tool-caller-8b', task: 'text-generation', p: 8, lf: 'oss', lang: [], dl: 5000, likes: 10, tr: 0, c: 0, caps: 1 | 2, gguf: 'b/tool-caller-8b-GGUF', st: true },
+      // tags only count fully for models people actually use (anyone can self-tag "tools")
+      { id: 'b/tool-caller-8b', task: 'text-generation', p: 8, lf: 'oss', lang: [], dl: 20000, likes: 60, tr: 0, c: 0, caps: 1 | 2, gguf: 'b/tool-caller-8b-GGUF', st: true },
       { id: 'c/huge-400b', task: 'text-generation', p: 400, lf: 'oss', lang: [], dl: 900000, likes: 900, tr: 0, c: 0, caps: 1 | 2, gguf: 'c/huge-GGUF', st: true },
     ] };
   const r = recommend(data, { ...base, use: 'agents', agent: 'functions' }, 1);
@@ -287,4 +288,27 @@ test('sprint 1: generated commands use flags and images that exist', async () =>
   assert.match(code(lt, 'llama.cpp (Docker'), /~\/\.cache\/huggingface:\/root\/\.cache\/huggingface/);
   assert.match(code(lt, 'llama.cpp (Docker'), /devices:\n {6}- \/dev\/dri/);
   assert.equal(code(lt, 'LM Studio'), 'lms get https://huggingface.co/unsloth/Qwen3.5-9B-GGUF@Q4_K_M');
+});
+
+test('sprint 2: the ranking prefers usable, trustworthy, current models', async () => {
+  const { recommend, quantLadder, fitModel, budgetOf } = await import('../web/js/advisor/engine.js');
+  const today = 20750;
+  const mk = (id, extra = {}) => ({ id, task: 'text-generation', p: 8, a: null, fam: 'Qwen', lf: 'oss', lic: 'apache-2.0', lang: [], dl: 50000, likes: 500, tr: 5, c: today - 30, caps: 1, gated: false, st: true, gguf: `${id}-GGUF`, mlx: null, q: null, ...extra });
+  const data = { caps: ['chat', 'tools', 'code', 'reasoning', 'vision', 'roleplay', 'uncensored', 'moe', 'embed', 'math', 'computer', 'swe', 'sql', 'longctx', 'rerank'], tool_families: ['Qwen'], models: [
+    mk('Qwen/Qwen3.5-9B'),
+    mk('someone/Qwen3.5-9B-Super-Agent', { dl: 400, likes: 2, tr: 0, caps: 1 | 2 | 2048 }), // self-tagged tools + swe
+    mk('baidu/Unlimited-OCR', { task: 'image-text-to-text' }),
+    mk('lab/Old-8B-Instruct', { c: today - 1000, dl: 900000, likes: 9000 }),
+    mk('lab/Model-8B-Base', { caps: 1 }),
+  ] };
+  const s = { ...base, use: 'agents', agent: 'coding', gpu: 'rtx-4070', runtime: 'ollama', ctx: 8192, must: '', archFilter: 'any', spec: 'auto' };
+  const ids = recommend(data, s, today).list.map((r) => r.m.id);
+  assert.equal(ids[0], 'Qwen/Qwen3.5-9B', `ranking: ${ids}`);
+  assert.ok(!ids.includes('baidu/Unlimited-OCR') && !ids.includes('lab/Model-8B-Base'));
+  assert.ok(ids.indexOf('lab/Old-8B-Instruct') > 0, 'an 8B from 2+ years ago does not top a current one');
+  // a single-quant upload only runs the quant it holds
+  assert.deepEqual(quantLadder({ gq: ['Q2_K'] }, 'gguf').map(([q]) => q), ['Q2_K']);
+  // 2-3 bit builds of dense models under 30B are not offered: a smaller model at 4+ bits answers better
+  const tight = { ...base, gpu: 'rtx-4060', runtime: 'ollama', ctx: 8192, priority: 40 };
+  assert.equal(fitModel({ id: 'x/Dense-27B', p: 27, gguf: 'x/y' }, 'gguf', tight, budgetOf(tight), 'ollama'), null);
 });

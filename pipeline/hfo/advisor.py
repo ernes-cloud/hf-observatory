@@ -170,6 +170,30 @@ def kv_factor(tags: set[str]) -> float | None:
     return None
 
 
+# Research sweeps: checkpoints, seeds and steps uploaded by the dozen, downloaded only by eval jobs.
+RESEARCH_RX = re.compile(r"(seed|ckpt|checkpoint|step|epoch|iter|run)[-_]?\d+|pilot|ablation|sweep|[-_]s\d{3,}$", re.I)
+
+# GGUF quant labels the advisor knows, as written in repo names.
+GGUF_LABELS = {"q8_0": "Q8_0", "q6_k": "Q6_K", "q5_k_m": "Q5_K_M", "q4_k_m": "Q4_K_M", "q3_k_m": "Q3_K_M", "iq2_m": "IQ2_M",
+               "f16": "F16", "bf16": "F16", "fp16": "F16"}
+OTHER_FORMAT_RX = re.compile(r"nvfp4|mxfp4|awq|gptq|(^|[-_.])fp8|exl2|exl3|mlx|bnb|w\d+a\d+", re.I)
+
+
+def quants_in_name(name: str) -> list[str] | None:
+    """Quantizations a single-file repo announces in its name ("…-Q4_K_M-GGUF", "…-mlx-4bit"); None if none."""
+    n = name.lower()
+    found = [label for tok, label in GGUF_LABELS.items() if re.search(rf"(^|[-_.]){tok}([-_.]|$)", n)]
+    other = re.search(r"(^|[-_.])(i?q\d[_a-z0-9]*)([-_.]|$)", n)
+    if not found and other:
+        return [other.group(2).upper()]  # a quant the advisor does not use (e.g. Q2_K): recorded so it is not mistaken
+    if not found and re.search(r"nvfp4|mxfp4", n):
+        return ["4-bit"]  # MLX FP4 builds: the size of a 4-bit build
+    bits = re.search(r"(\d)[-_]?bit", n)
+    if not found and bits:
+        return [f"{bits.group(1)}-bit"]
+    return sorted(set(found)) or None
+
+
 # CI fixtures and test uploads, not models anyone should run.
 TEST_REPO_RX = re.compile(r"internal-testing|(^|/)(pruna-)?test[-_/]|tiny-random|(^|[-_/])dummy([-_]|$)", re.I)
 
@@ -243,7 +267,7 @@ def build(con, cache=None) -> dict:
     def norm(s: str) -> str:
         return re.sub(r"[^a-z0-9]", "", s.lower())
 
-    def best(parent_id: str, kids: list[dict]) -> str | None:
+    def best(parent_id: str, kids: list[dict], fmt: str | None = None) -> str | None:
         """The most trusted faithful re-upload: its name must contain the original's name,
         and uncensored/abliterated rewrites are skipped unless the original is one."""
         base_name = parent_id.split("/")[-1].lower()
@@ -252,6 +276,8 @@ def build(con, cache=None) -> dict:
         def faithful(k) -> bool:
             # e.g. "Qwen3-8B-GGUF", "Meta-Llama-3.1-8B-Instruct-Q4_K_M-GGUF", "Qwen3-8B-mlx-4bit"
             name = k["id"].split("/")[-1].lower()
+            if fmt == "gguf" and OTHER_FORMAT_RX.search(name.replace(base_name, "")):
+                return False  # e.g. "Hy3-NVFP4" tagged gguf: not a llama.cpp build
             i = name.find(base_name)
             if i < 0:
                 return False
@@ -264,7 +290,9 @@ def build(con, cache=None) -> dict:
 
         def rank(k):
             author = k["author"].lower()
-            return (author == parent_author, author in TRUSTED_QUANTIZERS, k["dl"] or 0, k["likes"] or 0)
+            # a repo holding every quant beats a single-quant upload
+            multi = quants_in_name(k["id"].split("/")[-1]) is None
+            return (author == parent_author, author in TRUSTED_QUANTIZERS, multi, k["dl"] or 0, k["likes"] or 0)
         return max(ok, key=rank)["id"]
 
     def caps_of(m: dict) -> int:
@@ -303,9 +331,9 @@ def build(con, cache=None) -> dict:
         mlx_kids = [k for k in children if "mlx" in (k["formats"] or [])]
         st_kids = [k for k in children if "gguf" not in (k["formats"] or []) and "mlx" not in (k["formats"] or [])
                    and not re.search(r"gguf|mlx", k["id"].lower())]
-        gguf = m["id"] if "gguf" in fmts else best(m["id"], [k for k in gguf_kids if not is_mtp(k)] or gguf_kids)
+        gguf = m["id"] if "gguf" in fmts else best(m["id"], [k for k in gguf_kids if not is_mtp(k)] or gguf_kids, "gguf")
         gguf = CANONICAL_GGUF.get(key, gguf)
-        mlx = m["id"] if "mlx" in fmts else best(m["id"], mlx_kids)
+        mlx = m["id"] if "mlx" in fmts else best(m["id"], mlx_kids, "mlx")
         own_scheme = scheme_of(m) if "gguf" not in fmts and "mlx" not in fmts else None
         quants = {own_scheme: m["id"]} if own_scheme else {}
         for sch, _ in SCHEMES:
@@ -325,6 +353,9 @@ def build(con, cache=None) -> dict:
         my_drafts.sort(key=lambda d: (d["author"] not in trusted, method_rank.get(d["method"], 99), -d["dl"]))
         popular = (m["dl"] or 0) >= 300 or (m["likes"] or 0) >= 25 or (m["trend"] or 0) > 0
         if not popular or TEST_REPO_RX.search(m["id"]):
+            continue
+        lab = (m["author"] or "").lower() in LABS
+        if not lab and (m["likes"] or 0) < 10 and RESEARCH_RX.search(m["id"].split("/")[-1]):
             continue
         p_b = size_b(m)
         if p_b is not None and p_b < 0.005:  # a few million parameters: toy / test models
@@ -355,6 +386,9 @@ def build(con, cache=None) -> dict:
             "st": "safetensors" in fmts,
             "gguf": gguf,
             "mlx": mlx,
+            # single-quant uploads: only the quant they hold can be run from them
+            **({"gq": quants_in_name(gguf.split("/")[-1])} if gguf and quants_in_name(gguf.split("/")[-1]) else {}),
+            **({"mq": quants_in_name(mlx.split("/")[-1])} if mlx and quants_in_name(mlx.split("/")[-1]) else {}),
             "q": quants or None,
             "mtp": mtp or None,
             "kvf": kv_factor(tags_l),

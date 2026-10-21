@@ -253,3 +253,15 @@ def test_published_evals_only_from_labs_and_known_benchmarks():
     assert [e[0] for e in ev] == ["LibriSpeech (clean)", "AMI (Meetings test)"] and mteb == 1 and wer == 1.69
     # anyone else's claims are ignored
     assert published_evals({"author": "someone", "benchmarks_json": _json.dumps(rows)}) == ([], 0, None)
+
+
+def test_quants_in_names_and_research_sweeps():
+    from hfo.advisor import quants_in_name, RESEARCH_RX, OTHER_FORMAT_RX
+    assert quants_in_name("Phi-4-mini-instruct-Q4_K_M-GGUF") == ["Q4_K_M"]
+    assert quants_in_name("KAT-Coder-V2.5-Dev-Q2_K") == ["Q2_K"]
+    assert quants_in_name("Qwen3.5-9B-mlx-4Bit") == ["4-bit"]
+    assert quants_in_name("Qwen3-8B-GGUF") is None  # a repo with every quant
+    assert RESEARCH_RX.search("nor-100mb-after-wc-ckpt500_seed3407")
+    assert RESEARCH_RX.search("qwen3-4b-medicine-static-pilot-261016-step-022")
+    assert not RESEARCH_RX.search("Llama-3.1-8B-Instruct")
+    assert OTHER_FORMAT_RX.search("-nvfp4") and not OTHER_FORMAT_RX.search("-q4_k_m-gguf")

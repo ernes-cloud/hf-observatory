@@ -17,10 +17,11 @@ from .common import rows
 # Use cases offered by the advisor → pipeline tags that serve them.
 USE_TASKS = {
     "text-generation", "image-text-to-text", "any-to-any", "feature-extraction", "sentence-similarity",
-    "automatic-speech-recognition", "text-to-speech", "text-to-image",
+    "automatic-speech-recognition", "text-to-speech", "text-to-image", "text-ranking",
 }
 
-CAPS = ["chat", "tools", "code", "reasoning", "vision", "roleplay", "uncensored", "moe", "embed", "math"]
+CAPS = ["chat", "tools", "code", "reasoning", "vision", "roleplay", "uncensored", "moe", "embed", "math",
+        "computer", "swe", "sql", "longctx", "rerank"]
 
 TAG_RULES = {
     "tools": {"tool-use", "function-calling", "tool-calling", "agent", "agentic", "tools"},
@@ -31,6 +32,12 @@ TAG_RULES = {
     "uncensored": {"uncensored", "abliterated", "abliteration", "heretic"},
     "moe": {"moe", "mixture-of-experts"},
     "math": {"math", "mathematics"},
+    "computer": {"computer-use", "gui-agent", "gui", "gui-grounding", "browser", "browser-agent", "web-agent",
+                 "browser-use", "os-agent", "ui-tars", "screen-agent"},
+    "swe": {"swe-bench", "swe", "software-engineering", "coding-agent", "agentic-coding"},
+    "sql": {"text-to-sql", "sql", "sqlite", "nl2sql"},
+    "longctx": {"long-context", "1m-context", "1m context", "128k", "256k", "long-context-understanding"},
+    "rerank": {"reranker", "reranking", "rerank"},
 }
 NAME_RULES = {
     "code": r"coder|code|codestral|devstral|starcoder|swe-|deepseek-coder",
@@ -39,6 +46,11 @@ NAME_RULES = {
     "tools": r"(^|[-_/.])(agent|agentic|tool|fc|function)",
     "roleplay": r"roleplay|(^|[-_/.])rp([-_/.]|$)|storyteller",
     "chat": r"instruct|chat|(^|[-_/.])it([-_/.]|$)",
+    "computer": r"ui-tars|computer-use|gui-|webagent|web-agent|browser|os-atlas|showui|opencua",
+    "swe": r"devstral|swe-|openhands|swe_|qwen3-coder",
+    "sql": r"sql",
+    "longctx": r"(^|[-_/.])(128k|256k|512k|1m|1048k)([-_/.]|$)",
+    "rerank": r"rerank",
 }
 # Families whose recent instruct models are trained for tool calling even when untagged.
 TOOL_FAMILIES = {"Qwen", "Llama", "Mistral", "GLM", "GPT-OSS", "Kimi", "MiniMax", "Granite", "Nemotron", "DeepSeek", "Gemma"}
@@ -56,6 +68,15 @@ QUANT_TOKEN = re.compile(
 )
 
 ACTIVE_RX = re.compile(r"[-_.]a(\d+(?:\.\d+)?)b(?:[-_.]|$)", re.I)
+
+# Active parameters (billions) of well-known mixture-of-experts models whose names do not say it.
+KNOWN_ACTIVE = [
+    (r"gpt-oss-120b", 5.1), (r"gpt-oss-20b", 3.6),
+    (r"deepseek-(v3|r1)(?![-.]?distill)", 37), (r"kimi-k2", 32),
+    (r"glm-4\.[5-9]-air", 12), (r"glm-4\.[5-9](?!-air|v|-flash)", 32),
+    (r"mixtral-8x7b", 12.9), (r"mixtral-8x22b", 39), (r"llama-4-(scout|maverick)", 17),
+    (r"minimax-m2", 10), (r"qwen3-(coder-)?next", 3), (r"ernie-4\.5-21b", 3),
+]
 
 
 def build(con) -> dict:
@@ -126,6 +147,8 @@ def build(con) -> dict:
             caps.add("vision")
         if m["task"] in ("feature-extraction", "sentence-similarity"):
             caps.add("embed")
+        if m["task"] == "text-ranking":
+            caps.add("rerank")
         if ACTIVE_RX.search(name) or any("moe" in t for t in tags):
             caps.add("moe")
         return sum(1 << CAPS.index(c) for c in caps)
@@ -145,11 +168,18 @@ def build(con) -> dict:
         if not popular:
             continue
         active = ACTIVE_RX.search(m["id"])
+        active_b = float(active.group(1)) if active else None
+        if active_b is None:
+            for rx, a in KNOWN_ACTIVE:
+                # sanity check: a distilled dense model (e.g. "DeepSeek-R1-…-Qwen3-8B") is not the MoE original
+                if re.search(rx, m["id"].lower()) and (m["parameters"] or 0) / 1e9 > a * 2:
+                    active_b = a
+                    break
         out.append({
             "id": m["id"],
             "task": m["task"],
             "p": round(m["parameters"] / 1e9, 2) if m["parameters"] else None,
-            "a": float(active.group(1)) if active else None,
+            "a": active_b,
             "fam": m["family"],
             "lf": m["lf"],
             "lic": m["license"],

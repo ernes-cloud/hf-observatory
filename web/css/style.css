@@ -649,3 +649,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 8px 0 2p
   .run-tab { padding-inline: 12px; }
   .adv > summary { min-height: 44px; }
 }
+
+/* ---------- Advisor: sprint 4 (cost, upgrades, fine-tuning, detection) ---------- */
+.upgrade { margin: 10px 0 14px; }
+.upgrade .table-wrap { margin-top: 10px; }
+.upgrade-table th[scope="row"] { font-weight: 600; white-space: nowrap; }
+.upgrade-table td, .upgrade-table th { padding: 6px 8px; vertical-align: middle; }
+.finetune { margin-top: 8px; }
+.metric-sub.cost { color: var(--ink-2); }
+.detect-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 0; }
+.detect-row .note { margin: 0; }
+.measured { color: var(--good); font-weight: 600; }

@@ -404,6 +404,8 @@ def build(con, cache=None) -> dict:
     out.sort(key=lambda r: -r["dl"])
     if cache is not None:
         add_architecture(out, cache)
+        from . import externals
+        externals.build(out, cache)
     return {"caps": CAPS, "tool_families": sorted(TOOL_FAMILIES), "models": out}
 
 

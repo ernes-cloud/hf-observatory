@@ -34,6 +34,8 @@ jobs:
           restore-keys: snapshots-
 
       - name: Build site data
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # read accepted benchmark issues and the vLLM recipes list
         run: python pipeline/build.py --out web/data --cache pipeline/.cache --history-days 8 --max-snapshots 10
 
       - uses: actions/setup-node@v4

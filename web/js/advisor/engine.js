@@ -285,7 +285,7 @@ export function budgetOf(s) {
   if (s.hw === 'mac') {
     const chip = MAC_CHIPS.find((c) => c.id === s.chip) || MAC_CHIPS[0];
     const usable = s.mac * (s.mac >= 64 ? 0.75 : 0.67);
-    return { kind: 'mac', arch: 'apple', vendor: 'apple', fast: usable, fastBw: chip.bw, tf: chip.tf, slow: 0, slowBw: 0, slowTf: 0, n: 1,
+    return { kind: 'mac', arch: 'apple', vendor: 'apple', fast: usable, fastBw: chip.bw, tf: chip.tf, watts: chip.watts, slow: 0, slowBw: 0, slowTf: 0, n: 1,
       label: `${chip.name} Mac · ${s.mac} GB unified memory`,
       detail: `macOS lets the GPU use about ${Math.round(usable)} GB of it (raise it with sudo sysctl iogpu.wired_limit_mb). Bandwidth ${chip.bw} GB/s.` };
   }
@@ -296,13 +296,13 @@ export function budgetOf(s) {
     const linked = Math.min(Math.max(1, s.nunits || 1), u.cluster || 1);
     // Ollama, LM Studio and llama.cpp run on one machine: only vLLM / SGLang can use two linked units.
     const n = linked > 1 && !['vllm', 'sglang', 'any'].includes(s.runtime) ? 1 : linked;
-    return { kind: 'unified', id: u.id, arch: u.arch, vendor: u.vendor, arm: !!u.arm, fast: u.usable * n, fastBw: u.bw, tf: u.tf, slow: 0, slowBw: 0, slowTf: 0, n,
+    return { kind: 'unified', id: u.id, arch: u.arch, vendor: u.vendor, arm: !!u.arm, fast: u.usable * n, fastBw: u.bw, tf: u.tf, watts: u.watts * n, price: u.price ? u.price * n : null, slow: 0, slowBw: 0, slowTf: 0, n,
       label: `${n > 1 ? `${n}× ` : ''}${u.name}`,
       detail: `about ${Math.round(u.usable * n)} GB usable for models, ${u.bw} GB/s${n > 1 ? ' per unit' : ''}, ${ARCH_LABEL[u.arch]}. ${u.note}${linked > n ? ` ${RUNTIMES[s.runtime]?.label || 'This runtime'} runs on one unit: pick vLLM or SGLang to use both.` : ''}` };
   }
   if (s.hw === 'cpu') {
     const usable = Math.max(1, s.ram * 0.7 - 2);
-    return { kind: 'cpu', arch: 'cpu', vendor: 'cpu', fast: 0, fastBw: 0, tf: 0, slow: usable, slowBw: cpu.bw, slowTf: cpu.tf, n: 1,
+    return { kind: 'cpu', arch: 'cpu', vendor: 'cpu', fast: 0, fastBw: 0, tf: 0, watts: cpu.watts, slow: usable, slowBw: cpu.bw, slowTf: cpu.tf, n: 1,
       label: `CPU only · ${s.ram} GB RAM`, detail: `about ${Math.round(usable)} GB usable, ${cpu.bw} GB/s (${cpu.name}). Fine for small models; large ones run at a few words per second.` };
   }
   const g = s.gpu === 'custom' ? { name: `${s.customVram} GB GPU`, mem: +s.customVram || 8, bw: +s.customBw || 400, arch: s.customArch || 'ada', vendor: 'nvidia', tf: Math.round((+s.customBw || 400) * 0.16) } : (gpuById(s.gpu) || gpuById('rtx-4090'));
@@ -311,7 +311,7 @@ export function budgetOf(s) {
   const slow = s.offload ? Math.max(0, s.ram * 0.8 - 3) : 0;
   const g2 = s.gpu !== 'custom' && s.gpu2 ? gpuById(s.gpu2) : null;
   if (g2 && !g2.unified && !g.unified) return mixedBudget(g, n, g2, Math.max(1, s.ngpu2 || 1), s, slow, cpu);
-  return { kind: 'gpu', geforce: isGeForce(g), arch: g.arch, vendor: g.vendor, fast: usable, fastBw: g.bw, tf: g.tf, slow, slowBw: cpu.bw, slowTf: cpu.tf, n,
+  return { kind: 'gpu', geforce: isGeForce(g), watts: (g.watts || 250) * n, price: g.price ? g.price * n : null, arch: g.arch, vendor: g.vendor, fast: usable, fastBw: g.bw, tf: g.tf, slow, slowBw: cpu.bw, slowTf: cpu.tf, n,
     label: `${n > 1 ? `${n}× ` : ''}${g.name}${n > 1 ? ` · ${g.mem * n} GB VRAM` : ` · ${g.mem} GB VRAM`}`,
     detail: `about ${Math.round(usable)} GB usable for the model, ${g.bw} GB/s per card, ${ARCH_LABEL[g.arch] || g.arch}${slow ? `; plus ~${Math.round(slow)} GB of system RAM for overflow (much slower)` : ''}.` };
 }
@@ -331,14 +331,14 @@ function mixedBudget(g, n, g2, n2, s, slow, cpu) {
   const label = `${n}× ${g.name} + ${n2}× ${g2.name} · ${g.mem * n + g2.mem * n2} GB VRAM`;
   if (['vllm', 'sglang'].includes(s.runtime)) {
     const mem = Math.min(per(g), per(g2));
-    return { kind: 'gpu', mixed: true, geforce: isGeForce(g) && isGeForce(g2), arch: older.arch, vendor: g.vendor, fast: mem * total, fastBw: Math.min(g.bw, g2.bw), tf: Math.min(g.tf, g2.tf), slow, slowBw: cpu.bw, slowTf: cpu.tf, n: total,
+    return { kind: 'gpu', mixed: true, geforce: isGeForce(g) && isGeForce(g2), watts: g.watts * n + g2.watts * n2, arch: older.arch, vendor: g.vendor, fast: mem * total, fastBw: Math.min(g.bw, g2.bw), tf: Math.min(g.tf, g2.tf), slow, slowBw: cpu.bw, slowTf: cpu.tf, n: total,
       label, detail: `tensor parallel splits the model evenly, so each of the ${total} cards counts as ${Math.round(mem)} GB at ${Math.min(g.bw, g2.bw)} GB/s (the smaller and slower one), ${ARCH_LABEL[older.arch]} formats. llama.cpp / Ollama use all of the memory.` };
   }
   const m1 = per(g) * n, m2 = per(g2) * n2;
   const fast = m1 + m2;
   // time per byte, weighted by how much of the model each card holds
   const bw = fast / (m1 / g.bw + m2 / g2.bw);
-  return { kind: 'gpu', mixed: true, geforce: isGeForce(g) && isGeForce(g2), arch: older.arch, vendor: g.vendor, fast, fastBw: bw, tf: Math.min(g.tf, g2.tf), slow, slowBw: cpu.bw, slowTf: cpu.tf, n: 1,
+  return { kind: 'gpu', mixed: true, geforce: isGeForce(g) && isGeForce(g2), watts: g.watts * n + g2.watts * n2, arch: older.arch, vendor: g.vendor, fast, fastBw: bw, tf: Math.min(g.tf, g2.tf), slow, slowBw: cpu.bw, slowTf: cpu.tf, n: 1,
     label, detail: `about ${Math.round(fast)} GB usable; llama.cpp / Ollama put layers on both cards in proportion to their memory, ≈ ${Math.round(bw)} GB/s on average${slow ? `; plus ~${Math.round(slow)} GB of system RAM for overflow` : ''}. vLLM / SGLang would treat every card as the smaller one.` };
 }
 
@@ -769,3 +769,58 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
 const round1 = (x) => Math.round(x * 10) / 10;
 /** Context sizes the way models advertise them: 131072 → 128K. */
 export const fmtTokens = (n) => (n >= 1048576 ? `${round1(n / 1048576)}M` : `${Math.round(n / 1024)}K`);
+
+/* ------------------------------------------------------------------ cost, upgrades, fine-tuning */
+
+/**
+ * Electricity per million generated tokens. Generation keeps the GPU busy but below its board power
+ * (~80%), plus ~60 W for the rest of a desktop PC; unified machines and Macs are counted as a whole.
+ */
+export function energyPerMillion(fit, b, users = 1, pricePerKwh = 0.2) {
+  if (!fit?.tps || !b.watts) return null;
+  const watts = b.kind === 'gpu' ? b.watts * 0.8 + 60 : b.watts;
+  const seconds = 1e6 / (fit.tps * Math.max(1, users));
+  return (watts / 1000) * (seconds / 3600) * pricePerKwh;
+}
+
+/**
+ * What another machine would run: the top pick for the same job and settings on single GPUs with a
+ * launch price, the DGX Spark and the Ryzen AI Max+ 395. Keeps the cheapest machine for each step up in
+ * answer quality (a price / quality frontier), and only machines that beat the current top pick.
+ */
+export function upgradeOptions(data, s, current, gpus) {
+  const now = current ? qualityOf(current.m, current.fit) : 0;
+  const have = budgetOf(s).fast || 0;
+  // only more memory can unlock better models; per memory size the three cheapest machines compete
+  // (a cheap card with slow memory may only run a smaller model at the speed asked for)
+  const bySize = new Map();
+  for (const g of gpus) {
+    if (!g.price || g.id === s.gpu || g.mem <= have * 1.15) continue;
+    bySize.set(g.mem, [...(bySize.get(g.mem) || []), g].sort((a, c) => a.price - c.price).slice(0, 3));
+  }
+  const rows = [];
+  for (const g of [...bySize.values()].flat()) {
+    const s2 = { ...s, hw: 'gpu', gpu: g.id, ngpu: 1, gpu2: '', offload: false, runtime: s.runtime === 'mlx' ? 'any' : s.runtime };
+    const top = recommend(data, s2).list[0];
+    if (!top) continue;
+    const q = qualityOf(top.m, top.fit);
+    if (q <= now * 1.08) continue;
+    rows.push({ gpu: g, top, q, price: g.price });
+  }
+  rows.sort((a, c) => a.price - c.price);
+  const frontier = [];
+  for (const r of rows) if (!frontier.length || r.q > frontier[frontier.length - 1].q * 1.05) frontier.push(r);
+  return frontier.slice(0, 5);
+}
+
+/**
+ * Largest model you can fine-tune in fast memory, Unsloth-style (short sequences, batch 1-2):
+ * QLoRA ≈ 0.55 GB per B + 1.6 GB, LoRA on 16-bit weights ≈ 2.3 GB per B + 3.6 GB (fits Unsloth's published
+ * minimums: 8B → 6 / 22 GB, 70B → 41 / 164 GB), full fine-tuning with AdamW ≈ 16 bytes per parameter.
+ */
+export function finetuneCapacity(b) {
+  const mem = b.fast;
+  if (!mem) return null;
+  const cap = (x) => Math.max(0, x);
+  return { qlora: cap((mem - 1.6) / 0.55), lora: cap((mem - 3.6) / 2.3), full: cap(mem / 16) };
+}

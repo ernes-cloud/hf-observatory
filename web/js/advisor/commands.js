@@ -1,8 +1,14 @@
 // Ready-to-run commands and Docker Compose files for a recommendation.
 // `o` holds the per-model options from the "Customize" panel (see defaultOptions).
 
-import { LLM_USES, QUANTS, thinkingOf, toolParser } from './engine.js';
+import { LLM_USES, QUANTS, isCluster, isGptOss, parallelOf, thinkingOf, toolParser } from './engine.js';
 
+/** What `ollama run` takes: the official library tag for gpt-oss, else the Hugging Face GGUF (with its quant). */
+function ollamaRef(m, repo, quant) {
+  const official = /^openai\/gpt-oss-(\d+b)$/i.exec(m.id);
+  if (official) return `gpt-oss:${official[1].toLowerCase()}`;
+  return `hf.co/${repo}${quant ? `:${quant}` : ''}`;
+}
 const search = (q) => `https://huggingface.co/models?search=${encodeURIComponent(q)}`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -55,7 +61,12 @@ function vllmArgs(r, b, o, repo) {
   const { m, fit } = r;
   const think = thinkingOf({ ...m, reasoning: r.reasoning });
   const args = [`--model ${repo}`, `--max-model-len ${o.ctx}`, `--host 0.0.0.0 --port ${o.port || 8000}`];
-  if (b.n > 1) args.push(`--tensor-parallel-size ${b.n}`);
+  if (b.n > 1) {
+    const { tp, pp } = isCluster(b) ? { tp: b.n, pp: 1 } : parallelOf(b.n);
+    if (tp > 1) args.push(`--tensor-parallel-size ${tp}`);
+    if (pp > 1) args.push(`--pipeline-parallel-size ${pp}`);
+    if (isCluster(b)) args.push('--distributed-executor-backend ray');
+  }
   if (o.expertParallel && b.n > 1) args.push('--enable-expert-parallel');
   if (fit.onTheFly) args.push('--quantization fp8');
   args.push(`--gpu-memory-utilization ${o.gpuUtil}`);
@@ -76,16 +87,21 @@ function vllmArgs(r, b, o, repo) {
   return args;
 }
 
+const clusterNote = (b, how) => (isCluster(b)
+  ? [`# ${b.n} linked units: ${how}`, '# Connect them with the QSFP cable first (NVIDIA DGX Spark playbook: "Connect two Sparks").']
+  : []);
+
 function vllmCompose(r, b, o, repo) {
   const env = [...gatedEnv(r.m), ...(o.apiKey ? ['VLLM_API_KEY=${VLLM_API_KEY}   # put it in a .env file next to this compose'] : [])];
   return [
     ...armNote(b),
+    ...clusterNote(b, 'start a Ray cluster across them (ray start --head on this one, ray start --address=<head-ip>:6379 on the other), then run this on the head.'),
     'services:',
     '  vllm:',
     `    image: ${b.vendor === 'amd' ? 'rocm/vllm' : 'vllm/vllm-openai'}:${o.imageTag}`,
     '    ipc: host',
-    '    ports:',
-    `      - "${o.port || 8000}:${o.port || 8000}"`,
+    // linked units talk over the host network (NCCL / Ray), so the API port is the host's
+    ...(isCluster(b) ? ['    network_mode: host'] : ['    ports:', `      - "${o.port || 8000}:${o.port || 8000}"`]),
     ...hfCache(),
     ...envBlock(env),
     ...gpuBlock(b),
@@ -101,7 +117,12 @@ function sglangArgs(r, b, o, repo) {
   const { m, fit } = r;
   const think = thinkingOf({ ...m, reasoning: r.reasoning });
   const args = ['python3 -m sglang.launch_server', `--model-path ${repo}`, `--context-length ${o.ctx}`, `--host 0.0.0.0 --port ${o.port || 30000}`];
-  if (b.n > 1) args.push(`--tp ${b.n}`);
+  if (b.n > 1) {
+    const { tp, pp } = isCluster(b) ? { tp: b.n, pp: 1 } : parallelOf(b.n);
+    if (tp > 1) args.push(`--tp ${tp}`);
+    if (pp > 1) args.push(`--pp-size ${pp}`);
+    if (isCluster(b)) args.push(`--nnodes ${b.n} --node-rank \${NODE_RANK:-0} --dist-init-addr \${HEAD_IP}:20000`);
+  }
   if (fit.onTheFly) args.push('--quantization fp8');
   args.push(`--mem-fraction-static ${Math.min(0.9, o.gpuUtil).toFixed(2)}`);
   if (o.kv !== 'f16') args.push('--kv-cache-dtype fp8_e5m2');
@@ -124,15 +145,17 @@ function sglangArgs(r, b, o, repo) {
 function sglangCompose(r, b, o, repo) {
   const env = [...gatedEnv(r.m), ...(o.apiKey ? ['SGLANG_API_KEY=${SGLANG_API_KEY}   # put it in a .env file next to this compose'] : [])];
   return [
-    ...armNote(b),
+    ...(b.id === 'dgx-spark' ? [] : armNote(b)),
+    ...clusterNote(b, 'run this file on both, with HEAD_IP=<first unit\'s IP> and NODE_RANK=0 on the first, NODE_RANK=1 on the second (in a .env file).'),
     ...(b.vendor === 'amd' ? ['# AMD: use a ROCm tag of lmsysorg/sglang'] : []),
     'services:',
     '  sglang:',
-    `    image: lmsysorg/sglang:${o.imageTag}`,
+    // LMSYS publishes an ARM64 + Blackwell (sm_121) build for the DGX Spark under the "spark" tag
+    `    image: lmsysorg/sglang:${b.id === 'dgx-spark' && o.imageTag === 'latest' ? 'spark' : o.imageTag}`,
     '    ipc: host',
     '    shm_size: 32g',
-    '    ports:',
-    `      - "${o.port || 30000}:${o.port || 30000}"`,
+    // linked units talk over the host network (NCCL / Ray), so the API port is the host's
+    ...(isCluster(b) ? ['    network_mode: host'] : ['    ports:', `      - "${o.port || 30000}:${o.port || 30000}"`]),
     ...hfCache(),
     ...envBlock(env),
     ...gpuBlock(b),
@@ -174,7 +197,7 @@ function ollamaCompose(r, b, o, repo, quant) {
     'volumes:',
     '  ollama: {}',
     '',
-    `# then: docker compose exec ollama ollama run hf.co/${repo}:${quant}${ollamaThinkFlag(r, o)}`,
+    `# then: docker compose exec ollama ollama run ${ollamaRef(r.m, repo, quant)}${ollamaThinkFlag(r, o)}`,
   ].join('\n');
 }
 
@@ -184,7 +207,7 @@ function llamacppArgs(r, o, repo, quant) {
   const sp = o.specObj;
   const think = thinkingOf({ ...r.m, reasoning: r.reasoning });
   // MTP-preserving GGUF repos name their files differently, so let llama.cpp pick the default file there.
-  const args = [`-hf ${sp?.method === 'mtp' ? sp.gguf : `${repo}:${quant}`}`, `-c ${o.ctx}`, '-ngl 99', `--host 0.0.0.0 --port ${o.port || 8080}`];
+  const args = [`-hf ${sp?.method === 'mtp' ? sp.gguf : `${repo}${quant ? `:${quant}` : ''}`}`, `-c ${o.ctx}`, '-ngl 99', `--host 0.0.0.0 --port ${o.port || 8080}`];
   if (o.kv !== 'f16') args.push(`-fa on -ctk ${o.kv === 'q8' ? 'q8_0' : 'q4_0'} -ctv ${o.kv === 'q8' ? 'q8_0' : 'q4_0'}`);
   if (o.users > 1 && sp?.method !== 'mtp') args.push(`-np ${o.users}`);
   if (sp?.method === 'mtp') args.push('--spec-type draft-mtp');
@@ -252,19 +275,20 @@ export function commandsFor(r, s, b, caps, opts, specs = []) {
   const thinkNote = think?.mode === 'hybrid' && o.think === 'off'
     ? 'Thinking is off for every request; a client can still turn it on per request with <code>"chat_template_kwargs": {"enable_thinking": true}</code>.'
     : think?.mode === 'effort' ? `Reasoning effort “${esc(o.think)}”; clients can also send <code>"reasoning_effort"</code> per request.` : '';
-  const ggufQ = QUANTS.gguf.find(([n]) => n === fit.quant) ? fit.quant : 'Q4_K_M';
+  // gpt-oss GGUFs hold one MXFP4 file: no quant suffix to choose
+  const ggufQ = isGptOss(m) ? null : QUANTS.gguf.find(([n]) => n === fit.quant) ? fit.quant : 'Q4_K_M';
   const repo = m.gguf;
   const tabs = {};
   if (repo) {
     const env = ollamaEnv(o, false);
-    tabs.ollama = { label: 'Ollama', code: `${env.length ? `${env.join(' ')} ollama serve   # in one terminal\n` : ''}ollama run hf.co/${repo}:${ggufQ}${ollamaThinkFlag(r, o)}`, note: `${o.tools ? 'OpenAI-compatible API with tool calling at http://localhost:11434/v1. ' : ''}Ollama does not do speculative decoding: use llama.cpp, vLLM or SGLang for that.` };
+    tabs.ollama = { label: 'Ollama', code: `${env.length ? `${env.join(' ')} ollama serve   # in one terminal\n` : ''}ollama run ${ollamaRef(m, repo, ggufQ)}${ollamaThinkFlag(r, o)}`, note: `${o.tools ? 'OpenAI-compatible API with tool calling at http://localhost:11434/v1. ' : ''}Ollama does not do speculative decoding: use llama.cpp, vLLM or SGLang for that.` };
     tabs.ollamaDocker = { label: 'Ollama (Docker Compose)', yaml: true, code: ollamaCompose(r, b, o, repo, ggufQ) };
     const lo = { ...o, specObj: kind === 'gguf' ? o.specObj : null };
     tabs.llamacpp = { label: 'llama.cpp', code: `llama-server ${llamacppArgs(r, lo, repo, ggufQ).join(' ')}`, note: [`Chat UI and OpenAI-compatible API at http://localhost:${o.port || 8080}.`, lo.specObj?.method === 'mtp' ? 'MTP uses the MTP-preserving GGUF (add <code>:&lt;quant&gt;</code> to pick a file); it does not work with several parallel users or with images.' : '', lo.specObj?.experimental ? 'DFlash2 drafts need a llama.cpp build that includes DFlash2 support.' : '', thinkNote].filter(Boolean).join(' ') };
     tabs.llamacppDocker = { label: 'llama.cpp (Docker Compose)', yaml: true, code: llamacppCompose(r, b, lo, repo, ggufQ) };
-    tabs.lmstudio = { label: 'LM Studio', code: `lms get ${repo}`, note: `Or search “${esc(repo)}” in LM Studio and pick the <strong>${esc(ggufQ)}</strong> file.` };
+    tabs.lmstudio = { label: 'LM Studio', code: `lms get ${repo}`, note: `Or search “${esc(repo)}” in LM Studio${ggufQ ? ` and pick the <strong>${esc(ggufQ)}</strong> file` : ''}.` };
   } else {
-    tabs.ollama = { label: 'Ollama', note: `No GGUF build of this model is tracked yet. <a href="${search(`${base} gguf`)}" rel="noopener">Search GGUF builds on Hugging Face</a>, then run <code>ollama run hf.co/&lt;repo&gt;:${esc(ggufQ)}</code>.` };
+    tabs.ollama = { label: 'Ollama', note: `No GGUF build of this model is tracked yet. <a href="${search(`${base} gguf`)}" rel="noopener">Search GGUF builds on Hugging Face</a>, then run <code>ollama run hf.co/&lt;repo&gt;${ggufQ ? `:${esc(ggufQ)}` : ''}</code>.` };
   }
   if (b.kind === 'mac') {
     tabs.mlx = { label: 'MLX', code: m.mlx ? `pip install mlx-lm\nmlx_lm.server --model ${m.mlx} --port ${o.port || 8080}` : `pip install mlx-lm\nmlx_lm.convert --hf-path ${m.id} -q\nmlx_lm.server --model mlx_model --port ${o.port || 8080}`, note: `${m.mlx ? '' : 'No MLX build tracked: this converts the original to 4-bit locally. '}For a terminal chat use <code>mlx_lm.chat --model …</code>.` };

@@ -8,6 +8,7 @@ import {
   agentKind, capacity, recommend, refit, runtimeKinds, speedLabel, thinkingOf,
 } from '../advisor/engine.js';
 import { commandsFor, defaultOptions, defaultSpecTokens } from '../advisor/commands.js';
+import { addFavorite, exportFavorites, importFavorites, isEdited, lintCompose, loadFavorites, persistent, removeFavorite, updateFavorite } from '../advisor/favorites.js';
 
 const LANGS = ['en', 'es', 'zh', 'fr', 'de', 'ja', 'ko', 'pt', 'it', 'ru', 'ar', 'hi'];
 const MUST = [['tools', 'Tool calling'], ['vision', 'Vision'], ['reasoning', 'Thinking / reasoning'], ['spec', 'Speculative decoding'], ['prequant', 'Ready-made build for my setup'], ['longctx', 'Long context']];
@@ -34,6 +35,7 @@ let shown = PAGE;
 let compare = new Set();
 const cardOpts = new Map(); // model id → per-model options from the Customize panel
 const openCfg = new Set(); // model ids whose Customize panel is open
+const favUi = { open: false, editing: null, confirm: null, msg: '' }; // saved-compose panel state
 let els = {};
 
 /* --------------------------------------------------------------- formatting */
@@ -431,7 +433,7 @@ function resultCard(r, i) {
     ${cmds.length ? `<div class="run">
       <div class="run-tabs" role="tablist">${cmds.map((c, k) => `<button type="button" role="tab" class="run-tab" data-tab="${id}-${k}" aria-selected="${k === 0}">${esc(c.label)}</button>`).join('')}</div>
       ${cmds.map((c, k) => `<div class="run-panel" id="${id}-${k}"${k ? ' hidden' : ''}>
-        ${c.code ? `<div class="code-row"><pre><code>${esc(c.code)}</code></pre><div class="code-actions"><button type="button" class="btn copy" data-copy="${esc(c.code)}">Copy</button>${c.yaml ? `<a class="btn" download="docker-compose.yml" href="data:text/yaml;charset=utf-8,${encodeURIComponent(c.code)}">Download</a>` : ''}</div></div>` : ''}
+        ${c.code ? `<div class="code-row"><pre><code>${esc(c.code)}</code></pre><div class="code-actions"><button type="button" class="btn copy" data-copy="${esc(c.code)}">Copy</button>${c.yaml ? `<a class="btn" download="docker-compose.yml" href="data:text/yaml;charset=utf-8,${encodeURIComponent(c.code)}">Download</a><button type="button" class="btn fav-save" data-label="${esc(c.label)}" title="Keep this compose in your saved list to edit or reuse later">☆ Save</button>` : ''}</div></div>` : ''}
         ${c.note ? `<p class="note">${c.note}</p>` : ''}
       </div>`).join('')}
     </div>` : ''}
@@ -535,9 +537,190 @@ function refresh(resetPage = true) {
   els.count.textContent = list.length ? `${int(total)} models fit your setup. Showing the top ${Math.min(shown, list.length)} for ${what}.` : '';
   els.results.innerHTML = list.length
     ? list.slice(0, shown).map(resultCard).join('')
-    : `<div class="empty">Nothing fits these settings. Try widening the size range, a shorter context, fewer users, ${state.hw === 'gpu' ? 'allowing system RAM overflow, ' : ''}or removing a filter.</div>`;
+    : emptyHtml();
   els.more.hidden = list.length <= shown;
   els.compare.innerHTML = compareHtml(list);
+  if (!favUi.editing || !els.favs.firstChild) renderFavs(); // never throw away an edit in progress
+}
+
+/* --------------------------------------------------------------- nothing fits */
+
+/** Try relaxing one setting at a time and offer the ones that bring results back. */
+function emptyHtml() {
+  const s = state;
+  const tries = [
+    s.must && ['Remove the must-have filters', { must: '' }],
+    s.archFilter !== 'any' && ['Allow both dense and MoE models', { archFilter: 'any' }],
+    (s.sizeLo > 0 || s.sizeHi < SIZE_STOPS.length - 1) && ['Any model size', { sizeLo: 0, sizeHi: SIZE_STOPS.length - 1 }],
+    s.ctx > 8192 && [`Context ${ctxLabel(Math.max(8192, s.ctx / 4))} instead of ${ctxLabel(s.ctx)}`, { ctx: Math.max(8192, s.ctx / 4) }],
+    s.users > 1 && ['One user at a time', { users: 1 }],
+    s.kv === 'f16' && ['8-bit KV cache', { kv: 'q8' }],
+    s.hw === 'gpu' && !gpuById(s.gpu)?.unified && !s.offload && ['Allow overflow into system RAM', { offload: true }],
+    s.runtime !== 'any' && ['Any runtime', { runtime: 'any' }],
+    (s.commercial || s.hideGated || s.officialOnly) && ['Drop the license / gated / official filters', { commercial: false, hideGated: false, officialOnly: false }],
+    s.lang && ['Any language', { lang: '' }],
+  ].filter(Boolean);
+  els.fixes = [];
+  const lang = s.lang ? language(s.lang) : '';
+  const found = tries.map(([label, patch]) => [label, patch, recommend(A, sanitize({ ...s, ...patch, langName: lang })).total])
+    .filter((x) => x[2] > 0).sort((a, b) => b[2] - a[2]).slice(0, 5);
+  els.fixes = found.map((x) => x[1]);
+  return `<div class="empty">
+    <p><strong>Nothing fits these settings.</strong></p>
+    ${found.length ? `<p>Changing one thing brings models back:</p>
+      <div class="fix-list">${found.map(([label, , n], i) => `<button type="button" class="btn fix" data-fix="${i}">${esc(label)} <span class="muted">→ ${int(n)} models</span></button>`).join('')}</div>`
+    : '<p>Try a bigger machine, a smaller context or fewer filters.</p>'}
+  </div>`;
+}
+
+/* --------------------------------------------------------------- saved composes */
+
+const shortRuntime = (label) => label.replace(/\s*\(Docker Compose\)/, '').replace(' (pip)', '');
+const when = (t) => new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+function favHtml(f) {
+  const editing = favUi.editing === f.id;
+  const issues = editing ? lintCompose(f.yaml) : [];
+  return `<li class="fav" data-fav="${esc(f.id)}">
+    <div class="fav-head">
+      <input class="fav-name" type="text" value="${esc(f.name)}" aria-label="Name of this saved compose" maxlength="120" spellcheck="false">
+      ${isEdited(f) ? '<span class="chip">Edited</span>' : ''}
+    </div>
+    <p class="note fav-meta"><a href="${esc(hfUrl(f.model))}" rel="noopener">${esc(f.model)}</a> · ${esc(shortRuntime(f.runtime))}${f.machine ? ` · ${esc(f.machine)}` : ''} · ${f.updatedAt > f.savedAt + 1000 ? 'edited' : 'saved'} ${esc(when(f.updatedAt))}</p>
+    ${editing ? `<div class="fav-editor">
+        <label class="sr-only" for="fe-${esc(f.id)}">Compose file</label>
+        <textarea id="fe-${esc(f.id)}" class="fav-text" spellcheck="false" rows="${Math.min(40, f.yaml.split('\n').length + 2)}">${esc(f.yaml)}</textarea>
+        <label class="fav-note-field"><span>Notes</span><input type="text" class="fav-note" value="${esc(f.note)}" placeholder="What this setup is for, what to change next…" maxlength="2000"></label>
+        ${issues.length ? `<ul class="fav-lint">${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        <div class="fav-actions">
+          <button type="button" class="btn btn-primary" data-fav-act="save">Save changes</button>
+          <button type="button" class="btn" data-fav-act="cancel">Cancel</button>
+          ${isEdited(f) ? '<button type="button" class="btn" data-fav-act="restore">Restore the generated version</button>' : ''}
+        </div>
+      </div>`
+    : `${f.note ? `<p class="fav-notes">${esc(f.note)}</p>` : ''}
+      <details class="fav-preview"><summary>Show the file</summary><pre><code>${esc(f.yaml)}</code></pre></details>
+      <div class="fav-actions">
+        <button type="button" class="btn" data-fav-act="edit">Edit</button>
+        ${f.params ? '<button type="button" class="btn" data-fav-act="open" title="Load the machine and settings it was made with, and its Customize options">Open in the advisor</button>' : ''}
+        <button type="button" class="btn" data-fav-act="copy">Copy</button>
+        <a class="btn" download="${esc(f.name.replace(/[^\w.-]+/g, '-').toLowerCase() || 'docker-compose')}.yml" href="data:text/yaml;charset=utf-8,${encodeURIComponent(f.yaml)}">Download</a>
+        <button type="button" class="btn danger" data-fav-act="delete">${favUi.confirm === f.id ? 'Click again to delete' : 'Delete'}</button>
+      </div>`}
+  </li>`;
+}
+
+function renderFavs() {
+  // Replacing the list blurs a focused name field, whose change event would render again mid-way.
+  if (renderFavs.busy) return;
+  renderFavs.busy = true;
+  try { drawFavs(); } finally { renderFavs.busy = false; }
+}
+function drawFavs() {
+  const list = loadFavorites();
+  const keep = persistent();
+  els.favs.innerHTML = `<details class="card favs"${favUi.open ? ' open' : ''}>
+    <summary><span class="favs-title">★ Saved composes</span> <span class="count-pill">${list.length}</span></summary>
+    ${favUi.msg ? `<p class="note fav-msg" role="status">${esc(favUi.msg)}</p>` : ''}
+    ${list.length ? `<ul class="fav-list">${list.map(favHtml).join('')}</ul>`
+      : '<p class="note">Press <strong>☆ Save</strong> under any Docker Compose file to keep it here. You can rename it, edit the YAML and reopen it later with the same settings.</p>'}
+    <div class="fav-tools">
+      ${list.length ? '<button type="button" class="btn" data-fav-act="export">Export all (JSON)</button>' : ''}
+      <label class="btn">Import<input type="file" accept="application/json,.json" class="fav-import" hidden></label>
+      <span class="note">${keep ? 'Kept in this browser only: export them to back up or move to another device.' : 'Your browser is blocking storage here, so saved composes last until you close this page: export them to keep them.'}</span>
+    </div>
+  </details>`;
+}
+
+function favFlash(msg, redraw = true) {
+  favUi.msg = msg;
+  if (redraw) renderFavs();
+  else {
+    let el = els.favs.querySelector('.fav-msg');
+    if (!el) { el = Object.assign(document.createElement('p'), { className: 'note fav-msg' }); el.setAttribute('role', 'status'); els.favs.querySelector('summary').after(el); }
+    el.textContent = msg;
+  }
+  clearTimeout(favFlash.t);
+  favFlash.t = setTimeout(() => { favUi.msg = ''; if (els.favs.querySelector('.fav-msg')) els.favs.querySelector('.fav-msg').remove(); }, 5000);
+}
+
+function saveFromCard(btn) {
+  const card = btn.closest('.advice');
+  const id = card.dataset.id;
+  const code = btn.closest('.code-row').querySelector('pre code').textContent;
+  const label = btn.dataset.label;
+  const short = id.split('/').pop();
+  const f = addFavorite({
+    name: `${short} · ${shortRuntime(label)}`,
+    model: id, runtime: label, machine: els.lastBudget?.label || '',
+    yaml: code, generated: code,
+    params: location.hash.split('?')[1] || '',
+    opts: cardOpts.get(id) || null,
+  });
+  favUi.open = true;
+  btn.textContent = '★ Saved';
+  favFlash(`Saved “${f.name}”.`);
+}
+
+/** Load a saved compose's settings back into the advisor and show its card. */
+function openFavorite(f) {
+  state = readParams(new URLSearchParams(f.params));
+  syncForm();
+  refresh();
+  let i = els.lastList.findIndex((r) => r.m.id === f.model);
+  if (i < 0) { favFlash(`${f.model} is no longer recommended for these settings (the data changes every day); the saved file is unchanged.`); return; }
+  if (i >= shown) { shown = Math.ceil((i + 1) / PAGE) * PAGE; refresh(false); i = els.lastList.findIndex((r) => r.m.id === f.model); }
+  if (f.opts) cardOpts.set(f.model, f.opts);
+  openCfg.add(f.model);
+  rerenderCard(f.model);
+  const card = els.results.querySelector(`.advice[data-id="${CSS.escape(f.model)}"]`);
+  const t = [...card.querySelectorAll('.run-tab')].find((x) => x.textContent === f.runtime);
+  if (t) t.click();
+  card.classList.add('flash');
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setTimeout(() => card.classList.remove('flash'), 2000);
+}
+
+async function onFavClick(e) {
+  if (e.target.closest('summary')) { favUi.open = !e.target.closest('details').open; return; }
+  const btn = e.target.closest('[data-fav-act]');
+  if (!btn) return;
+  const act = btn.dataset.favAct;
+  if (act === 'export') {
+    const url = URL.createObjectURL(new Blob([exportFavorites()], { type: 'application/json' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'hf-observatory-composes.json' });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return;
+  }
+  const li = btn.closest('.fav');
+  const id = li?.dataset.fav;
+  const f = loadFavorites().find((x) => x.id === id);
+  if (!f) return;
+  if (act !== 'delete') favUi.confirm = null;
+  if (act === 'edit') { favUi.editing = id; renderFavs(); els.favs.querySelector('.fav-text')?.focus(); return; }
+  if (act === 'cancel') { favUi.editing = null; renderFavs(); return; }
+  if (act === 'restore') { li.querySelector('.fav-text').value = f.generated; return; }
+  if (act === 'save') {
+    const yaml = li.querySelector('.fav-text').value.replace(/\r\n/g, '\n');
+    updateFavorite(id, { yaml, note: li.querySelector('.fav-note').value.trim() });
+    const issues = lintCompose(yaml);
+    favUi.editing = issues.length ? id : null;
+    favFlash(issues.length ? 'Saved, but check the warnings below.' : 'Changes saved.');
+    return;
+  }
+  if (act === 'open') { openFavorite(f); return; }
+  if (act === 'copy') {
+    try { await navigator.clipboard.writeText(f.yaml); btn.textContent = 'Copied'; } catch { btn.textContent = 'Copy failed'; }
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
+    return;
+  }
+  if (act === 'delete') {
+    if (favUi.confirm !== id) { favUi.confirm = id; renderFavs(); return; }
+    favUi.confirm = null;
+    removeFavorite(id);
+    favFlash(`Deleted “${f.name}”.`);
+  }
 }
 
 /* --------------------------------------------------------------- render */
@@ -571,6 +754,7 @@ export async function render(section, params) {
           </div>
         </div>
         <p class="result-count" id="a-count" role="status" aria-live="polite"></p>
+        <div id="a-favs"></div>
         <div id="a-compare"></div>
         <div id="a-results" class="advice-list"></div>
         <div class="more-row" id="a-more" hidden><button type="button" class="btn btn-primary" id="a-more-btn">Show more</button></div>
@@ -586,6 +770,7 @@ export async function render(section, params) {
     sorts: section.querySelector('#a-sorts'),
     count: section.querySelector('#a-count'),
     compare: section.querySelector('#a-compare'),
+    favs: section.querySelector('#a-favs'),
     results: section.querySelector('#a-results'),
     more: section.querySelector('#a-more'),
     hwNote: section.querySelector('#hw-note'),
@@ -654,6 +839,11 @@ export async function render(section, params) {
       rerenderCard(id);
       return;
     }
+    if (e.target.closest('#a-favs')) { onFavClick(e); return; }
+    const fix = e.target.closest('[data-fix]');
+    if (fix) { state = sanitize({ ...state, ...els.fixes[+fix.dataset.fix] }); syncForm(); refresh(); return; }
+    const save = e.target.closest('.fav-save');
+    if (save) { saveFromCard(save); return; }
     const reset = e.target.closest('.cfg-reset');
     if (reset) {
       const id = reset.closest('.advice').dataset.id;
@@ -687,7 +877,20 @@ export async function render(section, params) {
   };
   section.querySelector('.advisor-results').addEventListener('change', onCfg);
   section.querySelector('.advisor-results').addEventListener('input', (e) => { if (e.target.type === 'range' || e.target.type === 'text') onCfg(e); });
-  section.querySelector('.advisor-results').addEventListener('change', (e) => {
+  section.querySelector('.advisor-results').addEventListener('change', async (e) => {
+    if (e.target.classList.contains('fav-name')) {
+      const name = e.target.value.trim() || 'Untitled compose';
+      updateFavorite(e.target.closest('.fav').dataset.fav, { name });
+      e.target.value = name;
+      favFlash(`Renamed to “${name}”.`, false);
+      return;
+    }
+    if (e.target.classList.contains('fav-import')) {
+      const file = e.target.files[0];
+      if (!file) return;
+      try { const n = importFavorites(await file.text()); favUi.open = true; favFlash(n ? `Imported ${n} saved compose${n > 1 ? 's' : ''}.` : 'Nothing new to import.'); } catch (err) { favFlash(`Could not import: ${err.message}`); }
+      return;
+    }
     const id = e.target.dataset?.compare;
     if (!id) return;
     if (e.target.checked) {

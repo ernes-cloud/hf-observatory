@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
-import { budgetOf, LLM_USES, QUANTS, recommend, refit, RUNTIMES, serverLadder, SIZE_STOPS, CTX_STOPS, USER_STOPS, USES, AGENT_KINDS, hasCap } from '../web/js/advisor/engine.js';
+import { budgetOf, isGptOss, LLM_USES, QUANTS, recommend, refit, RUNTIMES, serverLadder, SIZE_STOPS, CTX_STOPS, USER_STOPS, USES, AGENT_KINDS, hasCap } from '../web/js/advisor/engine.js';
 import { commandsFor, defaultOptions } from '../web/js/advisor/commands.js';
 import { allGpus, MAC_CHIPS, RAM_SIZES } from '../web/js/advisor/hardware.js';
 
@@ -105,7 +105,8 @@ function checkResult(res, s, label, r) {
       if (fit.quant === 'NVFP4') assert.equal(b.arch, 'blackwell', where);
       assert.ok(!['mac', 'cpu'].includes(b.kind), `${where}: server format on ${b.kind}`);
     } else {
-      assert.ok(QUANTS[kind].some(([q]) => q === fit.quant), `${where}: unknown ${kind} quant`);
+      assert.ok(QUANTS[kind].some(([q]) => q === fit.quant) || (isGptOss(m) && fit.quant === 'MXFP4'), `${where}: unknown ${kind} quant`);
+      if (isGptOss(m)) assert.equal(fit.quant, 'MXFP4', `${where}: gpt-oss is re-quantized`);
       if (kind === 'mlx') assert.equal(b.kind, 'mac', where);
     }
     if (fit.spec) {
@@ -156,8 +157,9 @@ test('unified-memory machines picked from the GPU list behave like the unified b
   assert.equal(spark.kind, 'unified');
   assert.equal(spark.fast, 119);
   assert.equal(spark.arch, 'blackwell');
-  assert.equal(budgetOf({ hw: 'gpu', gpu: 'dgx-spark', ngpu: 2 }).fast, 238);
-  assert.equal(budgetOf({ hw: 'gpu', gpu: 'dgx-spark', ngpu: 5 }).n, 2); // at most two linked units
+  assert.equal(budgetOf({ hw: 'gpu', gpu: 'dgx-spark', ngpu: 2, runtime: 'vllm' }).fast, 238);
+  assert.equal(budgetOf({ hw: 'gpu', gpu: 'dgx-spark', ngpu: 5, runtime: 'sglang' }).n, 2); // at most two linked units
+  assert.equal(budgetOf({ hw: 'gpu', gpu: 'dgx-spark', ngpu: 2, runtime: 'llamacpp' }).n, 1);
   assert.equal(budgetOf({ hw: 'gpu', gpu: 'strix-halo-128', ngpu: 1 }).vendor, 'amd');
 });
 

@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hfo import finder, graveyard, newsletter, overview, trees, trends  # noqa: E402
+from hfo import advisor, finder, graveyard, newsletter, overview, trees, trends  # noqa: E402
 from hfo.common import connect, write_json  # noqa: E402
 from hfo.sources import REPO, build_history, build_latest, list_versions, log  # noqa: E402
 
@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> None:
     sizes = {}
     sizes["overview.json"] = write_json(out / "overview.json", overview.build(con, meta))
     sizes["finder.json"] = write_json(out / "finder.json", finder.build(con))
+    sizes["advisor.json"] = write_json(out / "advisor.json", advisor.build(con))
     sizes["graveyard.json"] = write_json(out / "graveyard.json", graveyard.build(con))
     tree_index, tree_files = trees.build(con)
     sizes["families/index.json"] = write_json(out / "families" / "index.json", tree_index)

@@ -1,4 +1,6 @@
 import { load } from '../data.js';
+import { term } from '../glossary.js';
+import { pageHeader } from '../ui.js';
 import { barList, card, columnChart, shareBar, stats, tableHtml } from '../charts.js';
 import { authorUrl, compact, date, days, esc, int, LICENSE_FAMILY, params as fmtParams, pct, shortDate, task } from '../format.js';
 
@@ -8,13 +10,24 @@ const PAGE = 50;
 export async function render(section) {
   const g = await load('graveyard.json');
   const t = g.totals;
-  section.innerHTML = `
-    <div class="view-head">
-      <h1 id="h-graveyard">The graveyard</h1>
-      <p>The Hub never announces removals. The radar re-checks every model it tracks and flags those that start
-      returning a real 404. Since ${esc(date(t.first_detected))} it has caught <strong>${int(t.removed)}</strong> removals.
-      Below: who removes the most, how long models lived, and whether they were gated or had unclear licenses.</p>
-    </div>`;
+  const quick = g.lifespan.filter((l) => l.bucket === 'Under 1 day' || l.bucket === '1–7 days').reduce((a, l) => a + l.models, 0);
+  const topRemover = g.by_author[0];
+  section.replaceChildren(pageHeader({
+    id: 'h-graveyard', eyebrow: 'Graveyard', title: 'Models that disappeared',
+    lead: `Hugging Face does not announce when a model is deleted. The dataset re-checks every model it tracks and flags those whose page stops existing.
+      Since ${esc(date(t.first_detected))} it has found <strong>${int(t.removed)}</strong> ${term('removed', 'removed')} models.`,
+    takeaways: [
+      { value: pct(quick / t.removed), text: 'of removed models lasted less than a week. Most removals are quick experiments, not established models.' },
+      { value: days(t.median_lifespan_days), text: 'was the typical (median) lifetime of a removed model' },
+      { value: `${(t.gated_share_removed / t.gated_share_live).toFixed(1)}×`, text: `${term('gated', 'Gated')} models are this much more common among removed models than among live ones` },
+      { value: topRemover ? int(topRemover.removed) : '–', text: topRemover ? `models removed by <strong>${esc(topRemover.author)}</strong>, the publisher that deleted the most` : '' },
+    ],
+    howTo: [
+      'Removal dates are when the dataset noticed the model was gone, not the exact moment it was deleted.',
+      'Downloads and likes are the last values seen before the model disappeared.',
+      'The full list at the bottom can be searched and sorted. Removed models have no working link, so names are not clickable.',
+    ],
+  }));
 
   section.append(stats([
     { label: 'Removed models', value: int(t.removed), sub: `${pct(t.removed / t.tracked)} of everything tracked`, hero: true },

@@ -21,7 +21,10 @@ def build(con, meta: dict) -> dict:
                count(*) FILTER (WHERE license_family = 'non-commercial' AND NOT removed) AS non_commercial,
                count(DISTINCT author) FILTER (WHERE NOT removed) AS authors,
                sum(downloads_30d) FILTER (WHERE NOT removed) AS downloads_30d,
-               count(*) FILTER (WHERE NOT removed AND created_at >= {now} - INTERVAL 7 DAY) AS created_7d
+               count(*) FILTER (WHERE NOT removed AND created_at >= {now} - INTERVAL 7 DAY) AS created_7d,
+               count(*) FILTER (WHERE NOT removed AND nullif(trim(base_model), '') IS NOT NULL) AS derived,
+               median(epoch(removed_at - created_at) / 86400.0) FILTER (WHERE removed) AS removed_median_days,
+               avg((removed_at - created_at < INTERVAL 7 DAY)::INT) FILTER (WHERE removed) AS removed_within_week
         FROM m""")[0]
 
     top_orgs_count = rows(con, f"""

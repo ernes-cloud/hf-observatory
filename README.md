@@ -11,12 +11,15 @@ It is built entirely on the open dataset
 
 | Section | What it shows |
 |---|---|
+| **Home** | What the site is for in plain words, today's key numbers, “What do you want to do?” shortcuts to each section, this week's summary and the key terms. |
 | **Overview** | Totals (live, removed, gated, % open license), top publishers by model count and by 30-day downloads, tasks, licenses, sizes, formats, languages, families and models created per week. |
 | **Model finder** | “Which model fits my needs?” Filter by text, task, language, commercial-use license, hardware budget (“fits in 16 GB”), format (GGUF, MLX, ONNX…), hide gated models; sort by downloads, likes, trending, newest or size. Each result has a short English model card and a link to the Hub. Filters are kept in the URL, so searches can be shared. |
 | **Trends** | Download evolution across past releases (7/14/30-day windows): rising, fading, breakout and newcomer models with sparklines, publishers gaining or losing ground, adoption by family (Qwen, Llama, Mistral, Gemma…) as share of downloads or model count, and what is trending now. |
 | **Family trees** | Which base models spawn the most derivatives (fine-tunes, quantizations, adapters, merges), derivatives by family, and a navigable radial graph + collapsible tree per base model. |
 | **Graveyard** | Models removed from the Hub: who removes the most, how long they lived, removals per week, and how gated/unclear-license models compare with live ones. Searchable list of every removed model. |
 | **Newsletter** | A weekly English summary generated automatically by comparing two releases a week apart: new models, removals, notable moves, busiest publishers. Monday-to-Monday issues are archived; a “Last 7 days” issue refreshes with every update. Available as Markdown and as an RSS feed (`data/newsletter/feed.xml` on the site). |
+
+![Home](docs/screenshots/home.png)
 
 ![Overview](docs/screenshots/overview.png)
 
@@ -46,6 +49,8 @@ vN.0.0/models.jsonl.gz  (history)  ──►  one snapshot per day  ──► ag
 * **`web/`** is a dependency-free static site: plain HTML, CSS and ES modules, with hand-written SVG/CSS
   charts. No build step and no runtime CDN, so it works offline once loaded and is trivial to host on GitHub Pages.
 * **`.github/workflows/`** rebuilds the data daily and deploys to GitHub Pages (see below).
+* Every section opens with **key takeaways in plain English** and a “How to read this page” note, jargon is
+  underlined with an on-hover/tap **glossary**, and the finder has one-click **quick-start presets**.
 * **`tests/smoke.mjs`** opens every tab in headless Chromium (desktop light/dark and a 375 px phone) and fails
   on console errors, failed requests, sections that don’t render, or horizontal scrolling.
 

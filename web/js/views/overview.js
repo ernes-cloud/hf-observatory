@@ -1,5 +1,7 @@
 import { load } from '../data.js';
-import { barList, card, columnChart, shareBar, stats } from '../charts.js';
+import { barList, card, columnChart, shareBar } from '../charts.js';
+import { term } from '../glossary.js';
+import { pageHeader, sectionTitle } from '../ui.js';
 import { authorUrl, compact, date, esc, FORMAT_LABEL, hfUrl, int, language, LICENSE_FAMILY, pct, shortDate, task } from '../format.js';
 
 const LF_COLOR = { oss: 'var(--series-1)', unknown: 'var(--axis)', 'non-commercial': 'var(--series-2)' };
@@ -32,52 +34,62 @@ function metricCard({ title, sub, span = 6, items, labelOf, hrefOf, defaultMetri
 export async function render(section) {
   const d = await load('overview.json');
   const t = d.totals;
-  section.innerHTML = `
-    <div class="view-head">
-      <h1 id="h-overview">The Hugging Face ecosystem at a glance</h1>
-      <p>A snapshot of every model tracked by the radar as of <strong>${esc(date(d.meta.snapshot_at))}</strong>:
-      who publishes, under which licenses, at which sizes and in which formats. Download counts are the
-      last 30 days, as reported by the Hub.</p>
-    </div>`;
+  const topPub = d.top_orgs_by_downloads[0];
+  const known = d.sizes.filter((s) => s.bucket !== 'Unknown');
+  const knownTotal = known.reduce((a, s) => a + s.models, 0) || 1;
+  const small = known.filter((s) => s.bucket === '< 1B' || s.bucket === '1–4B').reduce((a, s) => a + s.models, 0);
+  const tasksNamed = d.tasks.filter((x) => x.task !== 'unspecified');
+  const unspecified = d.tasks.find((x) => x.task === 'unspecified');
 
-  section.append(stats([
-    { label: 'Live models', value: int(t.live), sub: `${int(t.tracked)} tracked in total`, hero: true },
-    { label: 'Removed from the Hub', value: int(t.removed), sub: `${pct(t.removed / t.tracked)} of all tracked` },
-    { label: 'Gated (live)', value: int(t.gated), sub: `${pct(t.gated / t.live)} require access approval` },
-    { label: 'Open license', value: pct(t.open_license / t.live), sub: `${int(t.open_license)} live models allow commercial use` },
-    { label: 'Publishers', value: int(t.authors), sub: 'organizations and users with live models' },
-    { label: 'Downloads, last 30 days', value: compact(t.downloads_30d), sub: `${int(t.created_7d)} models created in the last 7 days` },
-  ]));
+  section.replaceChildren(pageHeader({
+    id: 'h-overview', eyebrow: 'Overview', title: 'The ecosystem at a glance',
+    lead: `Who publishes AI models on Hugging Face, what they are for, how big they are and under which terms you can use them.
+      Snapshot of ${esc(date(d.meta.snapshot_at))}; ${term('downloads', 'downloads')} cover the last 30 days.`,
+    takeaways: [
+      { value: int(t.live), text: `live ${term('model', 'models')} from ${int(t.authors)} ${term('publisher', 'publishers')}; ${int(t.created_7d)} were created in the last week and ${int(t.removed)} have been deleted so far` },
+      { value: topPub ? pct(topPub.downloads / t.downloads_30d) : '–', text: topPub ? `of all downloads go to <strong>${esc(topPub.author)}</strong>, the most downloaded publisher` : '' },
+      { value: pct(t.open_license / t.live), text: `of live models allow commercial use (open ${term('license', 'license')})` },
+      { value: pct(small / knownTotal), text: `of models with a known size have under 4B ${term('parameters', 'parameters')}: small enough for a laptop` },
+    ],
+    howTo: [
+      'Each card answers one question. The <strong>Models / Downloads</strong> switch ranks either by how many models exist or by how much they are actually used.',
+      '<strong>Table</strong> shows the exact numbers behind a chart. Hover or tap a bar for details.',
+      `Underlined words such as ${term('gguf', 'GGUF')} or ${term('gated', 'gated')} show a definition when you hover or tap them.`,
+    ],
+  }));
+
+
 
   const grid = document.createElement('div');
   grid.className = 'grid';
   section.append(grid);
 
+  grid.append(sectionTitle('Who builds and who gets used', 'The organizations behind the most used models'));
   grid.append(metricCard({
-    title: 'Top publishers', sub: 'Organizations and users, by number of live models or by 30-day downloads',
+    title: 'Top publishers', sub: 'Ranked by monthly downloads or by number of models published',
     items: mergeOrgs(d.top_orgs_by_count, d.top_orgs_by_downloads), labelOf: (o) => o.author, hrefOf: (o) => authorUrl(o.author),
     defaultMetric: 'downloads', limit: 15,
   }));
-
-  grid.append(metricCard({
-    title: 'Tasks', sub: 'Main pipeline tag declared on the model card',
-    items: d.tasks, labelOf: (x) => task(x.task), limit: 15,
-  }));
-
-  // Licenses: part-to-whole + raw licenses
-  const licBody = document.createElement('div');
-  licBody.append(shareBar(d.license_families.map((f) => ({ label: LICENSE_FAMILY[f.family]?.label || f.family, value: f.models, color: LF_COLOR[f.family] }))));
-  const h = document.createElement('h3');
-  h.textContent = 'Most common declared licenses';
-  h.style.margin = '16px 0 8px';
-  licBody.append(h, barList(d.licenses.slice(0, 10).map((l) => ({ label: l.license, value: l.models }))));
   grid.append(card({
-    title: 'Licenses', sub: 'Classified by the dataset as open (commercial use allowed), non-commercial or unclear', body: licBody,
-    table: { columns: [{ key: 'license', label: 'License' }, { key: 'family', label: 'Class', fmt: (v) => LICENSE_FAMILY[v]?.label || v }, { key: 'models', label: 'Models', num: true, fmt: int }], rows: d.licenses },
+    title: 'Most downloaded models', sub: 'Last 30 days. Click a name to open it on Hugging Face.',
+    body: barList(d.top_models.map((m) => ({ label: m.id, value: m.downloads, href: hfUrl(m.id), external: true, title: `${m.id} · ${task(m.task)} · ${int(m.downloads)} downloads` }))),
+    table: { columns: [{ key: 'id', label: 'Model' }, { key: 'task', label: 'Task', fmt: task }, { key: 'downloads', label: 'Downloads (30d)', num: true, fmt: int }, { key: 'likes', label: 'Likes', num: true, fmt: int }], rows: d.top_models },
   }));
 
+  grid.append(sectionTitle('What the models are for', 'Tasks and model families'));
   grid.append(metricCard({
-    title: 'Model sizes', sub: 'Parameter count (from safetensors or GGUF metadata)', items: d.sizes.map((s) => ({ ...s })),
+    title: 'Tasks', sub: `What each model is built to do.${unspecified ? ` ${int(unspecified.models)} models declare no task and are left out.` : ''}`,
+    items: tasksNamed, labelOf: (x) => task(x.task), limit: 15,
+    table: { columns: [{ key: 'label', label: 'Task' }, { key: 'models', label: 'Models', num: true, fmt: int }, { key: 'downloads', label: 'Downloads (30d)', num: true, fmt: int }], rows: d.tasks.map((x) => ({ ...x, label: task(x.task) })) },
+  }));
+  grid.append(metricCard({
+    title: 'Model families', sub: 'Groups of related models (Qwen, Llama, Gemma…), detected from names and base models. BERT-style are small text-embedding models used for search.', items: d.families,
+    labelOf: (f) => f.family, defaultMetric: 'downloads', limit: 15,
+  }));
+
+  grid.append(sectionTitle('Size, format and terms of use', 'What you need to run a model and whether you may use it commercially'));
+  grid.append(metricCard({
+    title: 'Model sizes', sub: 'Number of parameters. Under 4B runs on most laptops; 30B+ needs a large GPU.', items: d.sizes.map((s) => ({ ...s })),
     labelOf: (s) => s.bucket, limit: 20,
   }));
   // keep size buckets in their natural order
@@ -86,33 +98,35 @@ export async function render(section) {
   orderSizes(sizeCard, d.sizes, 'models');
 
   grid.append(metricCard({
-    title: 'Distribution formats', sub: `A model can ship in several formats. ${int(d.no_format)} live models have none detected.`,
+    title: 'File formats', sub: `GGUF and MLX are for running models on your own computer; safetensors is the standard format. ${int(d.no_format)} models have none detected.`,
     items: d.formats, labelOf: (f) => FORMAT_LABEL[f.format] || f.format,
   }));
 
+  // Licenses: part-to-whole + raw licenses
+  const licBody = document.createElement('div');
+  licBody.append(shareBar(d.license_families.map((f) => ({ label: LICENSE_FAMILY[f.family]?.label || f.family, value: f.models, color: LF_COLOR[f.family] }))));
+  const h = document.createElement('h3');
+  h.textContent = 'Most common licenses';
+  h.style.margin = '16px 0 8px';
+  licBody.append(h, barList(d.licenses.slice(0, 10).map((l) => ({ label: l.license, value: l.models }))));
   grid.append(card({
-    title: 'Languages', sub: `Declared on the model card (top 20). ${int(d.no_language)} live models declare none.`,
+    title: 'Licenses', sub: 'Open licenses allow commercial use. “Unclear” means missing or ambiguous terms: check before using it in a product.', body: licBody,
+    table: { columns: [{ key: 'license', label: 'License' }, { key: 'family', label: 'Class', fmt: (v) => LICENSE_FAMILY[v]?.label || v }, { key: 'models', label: 'Models', num: true, fmt: int }], rows: d.licenses },
+  }));
+
+  grid.append(card({
+    title: 'Languages', sub: `Languages declared by the author (top 20). ${int(d.no_language)} models declare none.`,
     body: barList(d.languages.map((l) => ({ label: language(l.lang), value: l.models }))),
     table: { columns: [{ key: 'lang', label: 'Code' }, { key: 'name', label: 'Language' }, { key: 'models', label: 'Models', num: true, fmt: int }], rows: d.languages.map((l) => ({ ...l, name: language(l.lang) })) },
   }));
 
-  grid.append(metricCard({
-    title: 'Model families', sub: 'Detected from the model name and its declared base model', items: d.families,
-    labelOf: (f) => f.family, defaultMetric: 'downloads', limit: 15,
-  }));
-
-  grid.append(card({
-    title: 'Most downloaded models', sub: 'Last 30 days',
-    body: barList(d.top_models.map((m) => ({ label: m.id, value: m.downloads, href: hfUrl(m.id), external: true, title: `${m.id} · ${task(m.task)} · ${int(m.downloads)} downloads` }))),
-    table: { columns: [{ key: 'id', label: 'Model' }, { key: 'task', label: 'Task', fmt: task }, { key: 'downloads', label: 'Downloads (30d)', num: true, fmt: int }, { key: 'likes', label: 'Likes', num: true, fmt: int }], rows: d.top_models },
-  }));
-
+  grid.append(sectionTitle('Activity over time'));
   const weeks = d.created_per_week;
   grid.append(card({
-    span: 12, title: 'Models created per week',
-    sub: 'By creation date on the Hub, for models tracked by the radar. Older weeks are under-represented because the radar only started tracking in August 2026.',
+    span: 12, title: 'New models per week',
+    sub: 'By the date each model was created on Hugging Face. Weeks before August 2026 look small because the tracking started then.',
     body: columnChart(weeks.map((w) => ({ x: w.week, values: [w.models - w.removed, w.removed] })), {
-      series: [{ label: 'Still live' }, { label: 'Since removed' }], xFmt: shortDate, tipTitle: (w) => `Week of ${date(w.x)}`,
+      series: [{ label: 'Still online' }, { label: 'Since removed' }], xFmt: shortDate, tipTitle: (w) => `Week of ${date(w.x)}`,
     }),
     table: { columns: [{ key: 'week', label: 'Week of', fmt: date }, { key: 'models', label: 'Created', num: true, fmt: int }, { key: 'removed', label: 'Since removed', num: true, fmt: int }], rows: weeks },
   }));

@@ -1,4 +1,5 @@
 import { load } from '../data.js';
+import { pageHeader } from '../ui.js';
 import { stats } from '../charts.js';
 import { authorUrl, compact, date, esc, hfUrl, int, LICENSE_FAMILY, params as fmtParams, pct, task } from '../format.js';
 
@@ -7,15 +8,16 @@ let els = null;
 
 export async function render(section, params) {
   idx = await load('newsletter/index.json');
-  section.innerHTML = `
-    <div class="view-head">
-      <h1 id="h-newsletter">Weekly newsletter</h1>
-      <p>An automatic summary of what changed on the Hub each week: new models, removals and notable moves. Each issue
-      compares two releases of the dataset seven days apart. Weekly issues run Monday to Monday and never change once
-      published; “Last 7 days” is refreshed with every update.
-      <a href="data/newsletter/feed.xml">RSS feed</a>.</p>
-    </div>
-    <div id="nl-body"></div>`;
+  section.replaceChildren(pageHeader({
+    id: 'h-newsletter', eyebrow: 'Newsletter', title: 'The week on Hugging Face',
+    lead: 'A short report written automatically every week: the most notable new models, what grew, what shrank and what was deleted.',
+    howTo: [
+      'Weekly issues run Monday to Monday and never change once published. “Last 7 days” is refreshed with every update.',
+      'Pick an older issue from the list to read past weeks.',
+      'Copy as Markdown pastes the issue into an email, Slack or a blog. There is also an <a href="data/newsletter/feed.xml">RSS feed</a> for feed readers.',
+    ],
+  }));
+  section.insertAdjacentHTML('beforeend', '<div id="nl-body"></div>');
   const body = section.querySelector('#nl-body');
   if (!idx.issues.length) {
     body.innerHTML = '<div class="empty">No issues yet. The newsletter needs two dataset releases a week apart.</div>';

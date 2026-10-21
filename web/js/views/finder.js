@@ -1,4 +1,6 @@
 import { load } from '../data.js';
+import { term } from '../glossary.js';
+import { pageHeader } from '../ui.js';
 import { compact, date, esc, FORMAT_LABEL, gigabytes, hfUrl, int, language, LICENSE_FAMILY, params as fmtParams, task } from '../format.js';
 
 const PAGE = 24;
@@ -19,6 +21,18 @@ const SORTS = [
   { v: 'smallest', label: 'Smallest first' },
 ];
 const DAY_MS = 86400000;
+
+// One-click starting points for common needs; each replaces the current filters.
+const PRESETS = [
+  { label: 'Chatbot for my laptop', state: { task: 'text-generation', chat: true, mem: '16', fmt: ['gguf'] } },
+  { label: 'Runs on a Mac', state: { fmt: ['mlx'], mem: '16' } },
+  { label: 'Commercial use, small', state: { lic: 'commercial', mem: '8' } },
+  { label: 'Speech to text', state: { task: 'automatic-speech-recognition' } },
+  { label: 'Image generation', state: { task: 'text-to-image' } },
+  { label: 'Embeddings for search', state: { task: 'feature-extraction' } },
+  { label: 'Trending now', state: { sort: 'trending' } },
+];
+const EMPTY = { q: '', task: '', lang: '', lic: '', mem: '', unknownSize: false, fmt: [], hideGated: false, chat: false, sort: 'downloads' };
 
 let D = null; // decoded index
 let state = null;
@@ -171,7 +185,15 @@ function cardHtml(i) {
 }
 
 let results = [];
+function markPresets() {
+  els.presets?.forEach((b) => {
+    const want = { ...EMPTY, ...PRESETS[+b.dataset.i].state };
+    b.setAttribute('aria-pressed', String(JSON.stringify(want) === JSON.stringify(state)));
+  });
+}
+
 function refresh(resetPage = true) {
+  markPresets();
   results = filter();
   if (resetPage) shown = PAGE;
   els.count.textContent = `${int(results.length)} model${results.length === 1 ? '' : 's'} match`;
@@ -225,13 +247,22 @@ export async function render(section, params) {
     .map(({ l, n }) => ({ l, n, name: language(l) })).sort((a, b) => b.n - a.n)
     .map(({ l, n, name }) => `<option value="${esc(l)}">${esc(name)} (${int(n)})</option>`).join('');
 
-  section.innerHTML = `
-    <div class="view-head">
-      <h1 id="h-finder">Which model fits my needs?</h1>
-      <p>Filter ${int(D.n)} live models by task, language, license, hardware budget and format. Size limits use an
-      <em>estimate</em> of the memory needed to load the weights: parameters × bytes per parameter (2 for 16-bit,
-      ~1 for 8-bit, ~0.6 for 4-bit/GGUF) plus 15% overhead. Long contexts need more.</p>
-    </div>
+  section.replaceChildren(pageHeader({
+    id: 'h-finder', eyebrow: 'Model finder', title: 'Which model fits my needs?',
+    lead: `Search ${int(D.n)} live models. Pick a starting point below or set the filters yourself; every result links to the model's page on Hugging Face.`,
+    howTo: [
+      `<strong>Task</strong> is what the model does (chat, transcribe audio, generate images…).`,
+      `<strong>Max size</strong> uses the ${term('memory', 'estimated memory')} needed to load the model. Choose the memory of your GPU or Mac.`,
+      `<strong>License: commercial use allowed</strong> keeps only models with an open ${term('license', 'license')}.`,
+      `<strong>Format</strong>: ${term('gguf', 'GGUF')} for Ollama / LM Studio / llama.cpp, ${term('mlx', 'MLX')} for Apple Silicon, ${term('onnx', 'ONNX')} for browsers and mobile.`,
+      `${term('gated', 'Gated')} models need you to request access first; hide them if you want something you can download right away.`,
+    ],
+  }));
+  const presetsEl = document.createElement('div');
+  presetsEl.innerHTML = `<p class="presets-label" id="presets-label">Quick start</p>
+    <div class="presets" role="group" aria-labelledby="presets-label">${PRESETS.map((p, i) => `<button type="button" class="preset" data-i="${i}" aria-pressed="false">${esc(p.label)}</button>`).join('')}</div>`;
+  section.append(presetsEl);
+  section.insertAdjacentHTML('beforeend', `
     <form class="card filters" id="finder-form" role="search" onsubmit="return false">
       <div class="field wide"><label for="f-q">Search by name, organization or base model</label>
         <input type="search" id="f-q" name="q" placeholder="e.g. qwen coder, whisper, unsloth" autocomplete="off"></div>
@@ -264,7 +295,7 @@ export async function render(section, params) {
     </form>
     <div class="filter-bar"><p class="result-count" id="f-count" role="status" aria-live="polite"></p></div>
     <div class="results" id="f-results"></div>
-    <div class="more-row" id="f-more" hidden><button type="button" class="btn btn-primary" id="f-more-btn">Show more</button></div>`;
+    <div class="more-row" id="f-more" hidden><button type="button" class="btn btn-primary" id="f-more-btn">Show more</button></div>`);
 
   els = {
     form: section.querySelector('#finder-form'),
@@ -276,6 +307,14 @@ export async function render(section, params) {
   state = readState(params);
   syncForm();
   refresh();
+  els.presets = [...presetsEl.querySelectorAll('.preset')];
+  els.presets.forEach((b) => b.addEventListener('click', () => {
+    state = { ...EMPTY, ...PRESETS[+b.dataset.i].state };
+    syncForm();
+    writeHash();
+    refresh();
+  }));
+  markPresets();
 
   let timer;
   const onChange = (e) => {

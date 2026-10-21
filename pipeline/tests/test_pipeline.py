@@ -160,3 +160,14 @@ def test_monday_anchor_is_a_monday():
 
     assert MONDAY_DATE.weekday() == 0
     assert version_day(MONDAY_MAJOR) == MONDAY_DATE
+
+
+def test_advisor_links_faithful_gguf(built):
+    adv = json.loads((built / "advisor.json").read_text())
+    ids = {m["id"]: m for m in adv["models"]}
+    # the GGUF re-upload is attached to the original, not listed on its own
+    assert "quant/Qwen3-8B-GGUF" not in ids
+    assert ids["Qwen/Qwen3-8B"]["gguf"] == "quant/Qwen3-8B-GGUF"
+    assert ids["Qwen/Qwen3-8B"]["p"] == 7.0
+    # models with almost no usage are left out of recommendations
+    assert "someone/my-assistant" not in ids

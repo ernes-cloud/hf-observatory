@@ -8,6 +8,7 @@ const ICONS = {
   trend: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
   tree: '<circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5L5 16.5M12 11.5l7 5"/>',
   archive: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10h14V9M10 13h4"/>',
+  chip: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
 };
 const icon = (k) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
@@ -28,6 +29,7 @@ export async function render(section) {
   const topFam = ov.families.find((f) => f.family !== 'BERT-style') || ov.families[0];
 
   const tasks = [
+    { href: '#advisor', icon: 'chip', title: 'Get a recommendation for my hardware', text: 'Say what you will use it for (chat, coding, agents…) and which GPU or Mac you have. Get the models that fit and the command to run them.', fact: 'Ollama, LM Studio, llama.cpp, MLX or vLLM' },
     { href: '#finder', icon: 'search', title: 'Find a model for my project', text: 'Filter by what you need it for, language, license and how much memory your computer has.', fact: `${int(t.live)} models to search` },
     { href: '#overview', icon: 'chart', title: 'Get the big picture', text: 'Who publishes the most, which tasks dominate, which licenses and file formats are common.', fact: topPub ? `${esc(topPub.author)} leads with ${compact(topPub.downloads)} downloads a month` : '' },
     { href: '#trends', icon: 'trend', title: 'See what is rising and fading', text: 'Which models and publishers gained or lost downloads over the last 7, 14 or 30 days.', fact: riser ? `Biggest riser: ${esc(riser.id)} (+${compact(riser.delta)})` : '' },
@@ -44,7 +46,8 @@ export async function render(section) {
       ${int(t.tracked)} of them every day and turns the raw numbers into answers: which model suits your project,
       what is gaining popularity, who builds on whom, and what disappeared.</p>
       <div class="hero-actions">
-        <a class="btn btn-primary" href="#finder">Find a model</a>
+        <a class="btn btn-primary" href="#advisor">Get a model recommendation</a>
+        <a class="btn btn-ghost" href="#finder">Search all models</a>
         <a class="btn btn-ghost" href="#overview">See the big picture</a>
       </div>
     </div>

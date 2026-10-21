@@ -21,7 +21,7 @@ const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1
 const shotsDir = opt('--screenshots');
 let base = opt('--base');
 
-const VIEWS = (opt('--views') || 'home,overview,finder,trends,families,graveyard,newsletter,about').split(',');
+const VIEWS = (opt('--views') || 'home,advisor,overview,finder,trends,families,graveyard,newsletter,about').split(',');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.xml': 'application/xml', '.md': 'text/markdown' };
 
 let server;

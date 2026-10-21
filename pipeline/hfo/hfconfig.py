@@ -142,7 +142,7 @@ def load_configs(ids: list[str], cache: Path, max_new: int | None = None, worker
         known = {}
     now = time.time()
     todo = [i for i in ids if i not in known or ("err" in known[i] and now - known[i].get("t", 0) > RETRY_AFTER)]
-    limit = int(os.environ.get("HFO_CONFIG_FETCH", max_new if max_new is not None else 2500))
+    limit = int(os.environ.get("HFO_CONFIG_FETCH", max_new if max_new is not None else 5000))
     todo = todo[:limit]
     if todo and os.environ.get("HFO_OFFLINE") != "1":
         token = os.environ.get("HF_TOKEN") or None
@@ -160,4 +160,7 @@ def load_configs(ids: list[str], cache: Path, max_new: int | None = None, worker
             log(f"could not save the cache: {e}")
     usable = {i: known[i] for i in ids if i in known and "kvb" in known[i]}
     log(f"{len(usable)} of {len(ids)} advisor models have an architecture summary")
+    for i in ids[:8]:  # the most downloaded ones, to eyeball in the CI log
+        if i in usable:
+            log(f"  {i}: {usable[i]}")
     return usable

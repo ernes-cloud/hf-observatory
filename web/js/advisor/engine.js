@@ -71,6 +71,9 @@ export const RUNTIMES = {
 };
 
 // [name, bytes per parameter, quality factor] — best quality first.
+// Mixture of experts whose active size is not published: assume a fifth of the weights work per token.
+export const UNKNOWN_ACTIVE = 0.2;
+
 export const QUANTS = {
   gguf: [['F16', 2.0, 1], ['Q8_0', 1.07, 0.995], ['Q6_K', 0.83, 0.985], ['Q5_K_M', 0.72, 0.97], ['Q4_K_M', 0.61, 0.94], ['Q3_K_M', 0.49, 0.85], ['IQ2_M', 0.34, 0.7]],
   mlx: [['bf16', 2.0, 1], ['8-bit', 1.06, 0.995], ['6-bit', 0.81, 0.985], ['4-bit', 0.56, 0.94], ['3-bit', 0.44, 0.84]],
@@ -98,6 +101,22 @@ export function serverLadder(arch, m = {}) {
   return [[half, 2.0, 1, null], ['INT8 (W8A16)', 1.05, 0.985, 'int8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
 }
 export const isGptOss = (m) => m.fam === 'GPT-OSS' || /(^|\/)gpt-oss-\d+b$/i.test(m.id || '');
+
+/**
+ * GGUF / MLX ladder for a model. A single-quant upload ("…-Q4_K_M-GGUF", "…-mlx-4bit") can only run the
+ * quant it holds; quants outside the usual ladder (Q4_0, Q2_K, IQ4_XS…) get their size from the bit count.
+ */
+export function quantLadder(m, kind) {
+  const held = kind === 'gguf' ? m.gq : kind === 'mlx' ? m.mq : null;
+  if (!held) return QUANTS[kind];
+  return held.map((label) => QUANTS[kind].find(([q]) => q.toLowerCase() === label.toLowerCase()) || bitsQuant(label)).filter(Boolean);
+}
+function bitsQuant(label) {
+  const bits = +(/(\d+)/.exec(label)?.[1] || 0);
+  if (!bits) return null;
+  const q = { 1: 0.5, 2: 0.7, 3: 0.85, 4: 0.95, 5: 0.97, 6: 0.985, 8: 0.995 }[bits] || (bits > 8 ? 1 : 0.9);
+  return [label, (bits + 0.5) / 8, q];
+}
 
 /** Pre-quantized repository for a server format (FP8 can also be applied on the fly to the original weights). */
 export function serverRepo(m, key) {
@@ -138,7 +157,7 @@ export function mtpMethod(m) {
 export function specOptions(m, runtime, s) {
   const out = [];
   const drafts = m.dr || [];
-  if (['vllm', 'sglang'].includes(runtime)) {
+  if (['vllm', 'sglang'].includes(runtime) && s?.use !== 'vision') {
     const allowed = ['dflash2', 'dflash', 'dspark', 'eagle3', 'eagle']; // both servers support all of these drafters
     for (const method of allowed) {
       const d = drafts.find((x) => x.m === method && !x.g);
@@ -215,7 +234,7 @@ export const kvGB = (p, ctx) => (ctx / 8192) * Math.pow(Math.max(p, 0.5) / 8, 0.
  */
 export function kvBasis(m) {
   if (!m || m.p == null) return m?.p ?? 0;
-  const active = m.a || (m.moe ? m.p * 0.12 : m.p);
+  const active = m.a || (m.moe ? m.p * UNKNOWN_ACTIVE : m.p);
   return active < m.p ? Math.sqrt(active * m.p) : m.p;
 }
 /**
@@ -237,7 +256,7 @@ export const MOE_EFF = 0.85;
  * and Apple Silicon; GPU servers (vLLM / SGLang) batch the prompt better and use all cards in parallel.
  */
 export function prefillOf(m, where, b, runtime) {
-  const active = m.a || (m.moe ? m.p * 0.12 : m.p);
+  const active = m.a || (m.moe ? m.p * UNKNOWN_ACTIVE : m.p);
   if (!active) return null;
   return Math.min(50000, (computeTf(b, where, runtime) * 1e12) / (2 * active * 1e9));
 }
@@ -397,10 +416,12 @@ export const targetSpeed = (priority) => 8 + priority * 0.32;
 export function fitModel(m, kind, s, b, runtime) {
   const p = m.p;
   // Unknown-active MoE (tagged "moe" but no "A3B" in the name): assume ~12% of parameters are active.
-  const active = m.a || (m.moe ? p * 0.12 : p);
+  const active = m.a || (m.moe ? p * UNKNOWN_ACTIVE : p);
   // gpt-oss ships in MXFP4: its GGUF / MLX builds keep that format, re-quantizing it gains nothing
-  const base = kind === 'st' ? serverLadder(b.arch, m) : isGptOss(m) ? [['MXFP4', 0.55, 1]] : QUANTS[kind];
-  const ladder = base.filter(([q]) => !(['F16', 'bf16'].includes(q) && p > 2 && s.priority > 10));
+  const base = kind === 'st' ? serverLadder(b.arch, m) : isGptOss(m) ? [['MXFP4', 0.55, 1]] : quantLadder(m, kind);
+  // 16-bit is pointless for local builds above 2B; 2-3 bit builds of dense models under 30B lose too much
+  // (a smaller model at 4+ bits answers better), so they are not offered at all.
+  const ladder = base.filter(([q, , qf]) => !(['F16', 'bf16'].includes(q) && p > 2 && s.priority > 10) && !(qf < 0.9 && !(m.a || m.moe) && p < 30));
   const options = [];
   for (const [quant, bpp, q, key] of ladder) {
     let repo = kind === 'gguf' ? m.gguf : kind === 'mlx' ? m.mlx : m.id;
@@ -417,7 +438,8 @@ export function fitModel(m, kind, s, b, runtime) {
     const bb = where === 'split' ? { ...b, slowNeed: need.total - b.fast } : b;
     // MoE routing and less regular memory access cost some of the theoretical speed-up.
     const t = speedOf(active, bpp, s, bb, where, runtime, kvOf(m, s.ctx), p) * (active < p ? MOE_EFF : 1);
-    let opt = { quant, bpp, qf: q, need, where, gpuMem: where === 'split' ? b.fast : undefined, low: LOW_QUALITY.has(quant), tps: t, pp: prefillOf(m, where, b, runtime), download: p * bpp, repo, onTheFly };
+    let opt = { quant, bpp, qf: q, need, where, gpuMem: where === 'split' ? b.fast : undefined, low: LOW_QUALITY.has(quant) || q < 0.9,
+      tight: where === 'gpu' && need.total > b.fast * 0.95, tps: t, pp: prefillOf(m, where, b, runtime), download: p * bpp, repo, onTheFly };
     // Mixture of experts too big for the GPU: keeping the experts in RAM (llama.cpp --n-cpu-moe)
     // beats splitting whole layers, because attention and the shared weights stay on the GPU.
     if (where === 'split' && kind === 'gguf' && active < p && MOE_CPU_RUNTIMES.has(runtime)) {
@@ -429,8 +451,11 @@ export function fitModel(m, kind, s, b, runtime) {
   if (!options.length) return null;
   const target = targetSpeed(s.priority);
   const pick = (opts) => {
+    // usable precision first, then some memory headroom (drivers, the desktop, longer prompts)
     const good = opts.filter((o) => !o.low);
-    return good.find((o) => o.tps >= target) || good[good.length - 1] || opts[opts.length - 1];
+    const roomy = good.filter((o) => !o.tight);
+    const pool = roomy.length ? roomy : good;
+    return pool.find((o) => o.tps >= target) || pool[pool.length - 1] || opts[opts.length - 1];
   };
   const fast = options.filter((o) => o.where === 'gpu');
   return fast.length ? pick(fast) : pick(options);
@@ -445,7 +470,7 @@ const MOE_CPU_RUNTIMES = new Set(['llamacpp', 'lmstudio', 'any']);
  */
 export function moeCpu(m, bpp, s, b, runtime) {
   if (b.kind !== 'gpu' || !b.slow) return null;
-  const active = m.a || m.p * 0.12;
+  const active = m.a || m.p * UNKNOWN_ACTIVE;
   const dense = active * 0.4;
   const need = memNeeded(m.p, bpp, s, m);
   const gpuFixed = dense * bpp + need.kv + 0.5;
@@ -479,7 +504,7 @@ export function refit(r, s2, b, spec) {
   const extra = spec ? spec.draftP * 2 * 1.1 + (spec.method === 'mtp' ? need.weights * 0.03 : 0) : 0;
   const total = need.total + extra;
   const pool = fit.where === 'gpu' ? b.fast : b.fast + b.slow;
-  const active = m.a || (m.moe ? m.p * 0.12 : m.p);
+  const active = m.a || (m.moe ? m.p * UNKNOWN_ACTIVE : m.p);
   const bb = fit.where === 'split' ? { ...b, slowNeed: Math.max(0, total - b.fast) } : b;
   const mc = fit.where === 'moe-cpu' ? moeCpu(m, fit.bpp, s2, b, r.rt) : null;
   const base = mc ? mc.tps : speedOf(active, fit.bpp, s2, bb, fit.where, r.rt, kvOf(m, s2.ctx), m.p) * (active < m.p ? MOE_EFF : 1);
@@ -536,12 +561,21 @@ const PREPARED = new WeakSet();
 function prepare(data) {
   if (PREPARED.has(data)) return;
   const moeBit = capBits(data.caps).moe || 0;
+  const norm = (id) => id.split('/').pop().toLowerCase().replace(/[-_.](instruct|it|chat|gguf|awq|gptq|fp8|int[48]|bf16|nvfp4|mxfp4|mlx|w\d+a\d+|\d+bit|\d+gb|i?q\d\w*)(?=[-_.]|$).*$/, '');
   for (const m of data.models) {
     m.moe = !!m.a || (m.caps & moeBit) !== 0;
-    m.dup = m.id.split('/').pop().toLowerCase().replace(/[-_.](instruct|it|chat|gguf|awq|gptq|fp8|int[48]|bf16|nvfp4|mxfp4|mlx|w\d+a\d+|\d+bit|\d+gb)(?=[-_.]|$).*$/, '');
+    m.dup = norm(m.of || m.id); // a re-upload counts as a copy of what it quantizes
+  }
+  // "bartowski/Author_Model-GGUF" style names: drop the author prefix when that names a listed model
+  const keys = new Set(data.models.map((m) => m.dup));
+  for (const m of data.models) {
+    const i = m.dup.indexOf('_');
+    if (i > 0 && keys.has(m.dup.slice(i + 1))) m.dup = m.dup.slice(i + 1);
   }
   PREPARED.add(data);
 }
+
+const SPECIALIST_RX = /(^|[-_/])(ocr|docling|guard|safeguard|shield|reward|prm|classifier|judge|embed(ding)?s?|rerank(er)?|router|detector|moderation|asr|tts)([-_.]|$)/;
 
 export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
   prepare(data);
@@ -559,6 +593,8 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
   const wS = 1.8 * (s.priority / 100) + 0.2;
   const out = [];
   const must = new Set(Array.isArray(s.must) ? s.must : String(s.must || '').split(',').filter(Boolean));
+  const consumerAmd = b.vendor === 'amd' && ['rdna3', 'rdna4'].includes(b.arch);
+  const homeGpu = s.users <= 1 && (b.geforce || consumerAmd || b.vendor === 'intel' || b.mixed);
 
   for (const m of data.models) {
     if (!use.tasks.includes(m.task)) continue;
@@ -578,7 +614,13 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (must.has('vision') && !has(m, 'vision')) continue;
     if (must.has('reasoning') && !has(m, 'reasoning') && !thinkingOf(m)) continue;
     if (must.has('longctx') && !(m.mc ? m.mc >= 131072 : has(m, 'longctx'))) continue;
-    if (isLLM && /(^|[-_/])base([-_]|$)/.test(name) && !has(m, 'chat')) continue;
+    // base (pre-trained only) models do not follow instructions, whatever their tags say
+    if (isLLM && /(^|[-_/])base([-_.]|$)/.test(name) && !/instruct|chat/.test(name)) continue;
+    // specialist checkpoints are not general assistants (OCR is fine when you asked for vision)
+    if (isLLM && SPECIALIST_RX.test(name) && !(s.use === 'vision' && /ocr|docling/.test(name))) continue;
+    if (['code', 'agents'].includes(s.use) && m.p != null && m.p < 1) continue;
+    // image / speech generators: weights we can size, not add-ons (ControlNets, LoRAs) or tool bundles
+    if (['image', 'tts'].includes(s.use) && (/controlnet|lora|adapter|ip-adapter|gguf|\.cpp/.test(name) || (s.use === 'image' && m.p == null))) continue;
     if (s.use === 'vision' && !has(m, 'vision')) continue;
     if (s.use === 'code' && !has(m, 'code') && !(has(m, 'chat') && toolFams.has(m.fam))) continue;
     if (kindCfg?.requires && !has(m, kindCfg.requires)) continue;
@@ -597,9 +639,12 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
         if (kinds.length > 1 && k === 'gguf' && !m.gguf) continue;
         if (kinds.length > 1 && k === 'mlx' && !m.mlx) continue;
         if (k === 'st' && !m.st) continue;
+        if (k === 'st' && kinds.length > 1 && consumerAmd) continue; // vLLM / SGLang ROCm builds target Instinct cards
         const f = fitModel(m, k, sm, b, s.runtime);
         if (!f) continue;
-        if (!fit || (f.where === 'gpu' && fit.where !== 'gpu') || (f.where === fit.where && f.tps > fit.tps * 1.15)) { fit = f; kind = k; }
+        // On a home GPU for one user, llama.cpp / Ollama is simpler: a server only when clearly faster.
+        const edge = k === 'st' && homeGpu ? 1.5 : 1.15;
+        if (!fit || (f.where === 'gpu' && fit.where !== 'gpu') || (f.where === fit.where && f.tps > fit.tps * edge)) { fit = f; kind = k; }
       }
       if (!fit) continue;
       // Speculative decoding: faster single-user generation for a little extra memory (the draft).
@@ -625,9 +670,16 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
 
     const why = [];
     let rel = 0;
+    const official = OFFICIAL.has(m.id.split('/')[0].toLowerCase());
+    // Capability tags come from free-text tags and names, which anyone can write: count them fully only
+    // for original labs or widely used models. Labs' own models also get the abilities their parsers show.
+    const trusted = official || m.dl >= 10000 || m.likes >= 50;
+    const think = thinkingOf(m);
+    const can = (c) => has(m, c) || (official && c === 'tools' && has(m, 'chat') && !!toolParser(m)) || (official && c === 'reasoning' && !!think);
+    const tagW = trusted ? 1 : 0.4;
     // relevance to the job
     if (kindCfg) {
-      for (const [cap, w] of Object.entries(kindCfg.weights)) if (has(m, cap)) rel += w;
+      for (const [cap, w] of Object.entries(kindCfg.weights)) if (can(cap)) rel += w * tagW;
       if (!has(m, 'tools') && toolFams.has(m.fam) && has(m, 'chat')) { rel += 2; why.push(`${m.fam} instruct models support tool calling`); }
       if (m.p != null && m.p < kindCfg.minP) rel -= 2;
       if (has(m, 'swe') && s.agent === 'coding') why.push('Trained or evaluated for agentic coding (SWE-style tasks)');
@@ -635,11 +687,12 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       if (has(m, 'sql') && s.agent === 'data') why.push('Trained for text-to-SQL');
       if (has(m, 'tools')) why.push('Tagged for tool calling');
     }
-    if (s.use === 'code') { if (has(m, 'code')) { rel += 4; why.push('Built for code'); } if (has(m, 'swe')) rel += 1; }
+    if (s.use === 'code') { if (has(m, 'code')) { rel += 4 * tagW; why.push('Built for code'); } if (has(m, 'swe')) rel += 1 * tagW; }
     // Word error rate the developers report on LibriSpeech test-clean (lower is better)
     if (s.use === 'asr' && m.wer != null) { rel += m.wer <= 2 ? 1.5 : m.wer <= 3.5 ? 0.8 : 0; why.push(`${m.wer}% word error rate on LibriSpeech (clean), as reported by its developers`); }
-    if (s.use === 'reasoning') { if (has(m, 'reasoning')) { rel += 4; why.push('Thinking / reasoning model'); } if (has(m, 'math')) rel += 1; }
-    if (s.use === 'writing' && has(m, 'roleplay')) { rel += 3; why.push('Tuned for creative writing'); }
+    if (s.use === 'reasoning') { if (can('reasoning')) { rel += 4 * tagW; why.push('Thinking / reasoning model'); } if (has(m, 'math')) rel += 1 * tagW; }
+    if (s.use === 'writing' && has(m, 'roleplay')) { rel += 3 * tagW; why.push('Tuned for creative writing'); }
+    if (s.use === 'writing' && has(m, 'code') && !has(m, 'roleplay')) rel -= 1.5; // coder models write prose poorly
     if (s.use === 'vision' && has(m, 'computer')) rel += 0.5;
     if (['chat', 'agents', 'writing', 'reasoning'].includes(s.use)) rel += has(m, 'chat') ? 1 : -1.5;
     if (ctx < s.ctx) { rel -= s.ctx / ctx >= 4 ? 3 : 1.5; why.push(`Built for up to ${fmtTokens(m.mc)} tokens of context, less than the ${fmtTokens(s.ctx)} you asked for`); }
@@ -649,16 +702,16 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     }
 
     // popularity, freshness, provenance
-    const pop = Math.log10(m.dl + 10) * 1.1 + Math.log10(m.likes + 1) * 0.7 + (m.tr > 0 ? Math.log10(m.tr + 1) * 0.8 : 0);
+    // Adoption is a useful signal of quality and support, but capped so it cannot outweigh fit and quality.
+    const pop = Math.min(9, Math.log10(m.dl + 10) * 1.1 + Math.log10(m.likes + 1) * 0.7 + (m.tr > 0 ? Math.log10(m.tr + 1) * 0.8 : 0)) * 0.6;
     const age = m.c != null ? today - m.c : 9999;
     const fresh = age < 120 ? 1.2 : age < 365 ? 0.5 : 0;
-    const official = OFFICIAL.has(m.id.split('/')[0].toLowerCase()) ? 1.2 : 0;
 
     // quality vs speed
     const quality = isLLM ? qualityOf(m, fit) : 0;
     const speed = fit.tps ? Math.log2(1 + fit.tps) : 0;
     // Every term of the score is kept, so a card can show why it ranks where it does.
-    const parts = [['Fits the job', rel], ['Popularity', pop], ['Recent release', fresh], ['From the original lab', official]];
+    const parts = [['Fits the job', rel], ['Popularity', pop], ['Recent release', fresh], ['From the original lab', official ? 1.2 : 0]];
     if (isLLM) parts.push(['Answer quality (size × precision)', wQ * quality * 0.9], ['Speed on your machine', wS * speed * 0.8]);
     const penalty = (label, x) => { if (x) parts.push([label, -x]); };
     if (fit.where === 'split') penalty('Part of it in system RAM', 1.5);
@@ -667,7 +720,12 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       why.push(`Experts kept in system RAM (${fit.cpuMoe ? `llama.cpp --n-cpu-moe ${fit.cpuMoe}` : 'llama.cpp --cpu-moe'}): attention and the context stay on the GPU`);
     }
     if (fit.where === 'cpu' && b.kind !== 'cpu') penalty('Runs on the CPU', 1);
-    if (fit.low) penalty('Very low precision', 1.5);
+    if (fit.low) penalty('Very low precision', 4);
+    if (fit.tight) penalty('Little memory headroom', 1.5);
+    // little-known third-party uploads: fine-tunes and merges rarely beat the original, and nobody vouches for them
+    if (!trusted && !(m.tr > 0)) penalty('Little-known upload', 1.5);
+    // older generations are usually beaten by newer models of the same size
+    if (isLLM || s.use === 'rag') penalty('Older generation', age > 900 ? 2.5 : age > 540 ? 1.5 : 0);
     // Too slow for the speed the user asked for: push it down (relative to the slider's target).
     if (isLLM && fit.tps != null) {
       const ratio = fit.tps / targetSpeed(s.priority);
@@ -675,7 +733,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     }
     if (fit.spec) why.push(`${fit.spec.label}: ≈ ${round1(fit.tps / fit.tpsBase)}× faster generation${fit.spec.recent ? ' (needs a recent llama.cpp)' : ''}`);
     if (kind === 'st' && fit.repo !== m.id) why.push(`Pre-quantized ${fit.quant} build available for your ${b.arch === 'blackwell' && fit.quant === 'NVFP4' ? 'Blackwell GPU (native FP4)' : 'GPU'}`);
-    if (kind === 'gguf' && !m.gguf) { penalty('No GGUF build tracked', 1.5); why.push('No GGUF build tracked yet: use the search link below'); }
+    if (kind === 'gguf' && !m.gguf) { penalty('No GGUF build tracked', 3); why.push('No GGUF build tracked yet: use the search link below'); }
     if (kind === 'mlx' && !m.mlx) penalty('No MLX build tracked', 1);
     const score = parts.reduce((t, [, v]) => t + v, 0);
 

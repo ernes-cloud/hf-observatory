@@ -186,6 +186,15 @@ npm run screenshots                       # refresh docs/screenshots/
   original lab, answer quality, speed, and each penalty).
 * Speech and image commands follow the library a model is built for (NeMo for Parakeet / Canary, diffusers,
   transformers); for other libraries the card points to the model card instead of guessing a command.
+* **Ranking rules** (each visible in "Why it ranks #N"): adoption counts but is capped; models older than 18
+  months lose points; capability tags (tools, SWE, code…) count fully only for original labs or widely used
+  models, and labs' own models get the abilities their tool / reasoning parsers show; little-known third-party
+  uploads lose points; 2–3-bit builds are never offered for dense models under 30B and are penalised elsewhere;
+  a quantization that leaves under 5% memory headroom is avoided when another fits. Base, OCR, guard, reward,
+  embedding and router checkpoints never appear as assistants; research sweeps (seed / step / checkpoint
+  uploads) are dropped by the pipeline. A single-quant upload (e.g. "…-Q4_K_M-GGUF") is only offered at the
+  quant it holds, and GGUF candidates named for another format (NVFP4, AWQ…) are rejected. On a home GPU for
+  one user, llama.cpp / Ollama is preferred unless a GPU server is clearly (1.5×) faster.
 * Without config data, the advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
   ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size; for mixture-of-experts models with the
   geometric mean of active and total parameters, and scaled by the attention type read from the Hub

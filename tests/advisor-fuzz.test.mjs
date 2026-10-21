@@ -118,7 +118,8 @@ function checkResult(res, s, label, r) {
       if (fit.quant === 'NVFP4') assert.equal(b.arch, 'blackwell', where);
       assert.ok(!['mac', 'cpu'].includes(b.kind), `${where}: server format on ${b.kind}`);
     } else {
-      assert.ok(QUANTS[kind].some(([q]) => q === fit.quant) || (isGptOss(m) && fit.quant === 'MXFP4'), `${where}: unknown ${kind} quant`);
+      const held = kind === 'gguf' ? m.gq : m.mq;
+      assert.ok((held ? held.includes(fit.quant) : QUANTS[kind].some(([q]) => q === fit.quant)) || (isGptOss(m) && fit.quant === 'MXFP4'), `${where}: ${fit.quant} is not a quant this repo holds`);
       if (isGptOss(m)) assert.equal(fit.quant, 'MXFP4', `${where}: gpt-oss is re-quantized`);
       if (kind === 'mlx') assert.equal(b.kind, 'mac', where);
     }

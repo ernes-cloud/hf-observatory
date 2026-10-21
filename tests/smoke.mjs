@@ -21,7 +21,7 @@ const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1
 const shotsDir = opt('--screenshots');
 let base = opt('--base');
 
-const VIEWS = (opt('--views') || 'overview,finder,trends,families,graveyard,newsletter,about').split(',');
+const VIEWS = (opt('--views') || 'home,overview,finder,trends,families,graveyard,newsletter,about').split(',');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.xml': 'application/xml', '.md': 'text/markdown' };
 
 let server;
@@ -47,9 +47,11 @@ async function checkViewport(name, viewport, theme) {
   const ctx = await browser.newContext({ viewport, colorScheme: theme, deviceScaleFactor: shotsDir ? 2 : 1 });
   const page = await ctx.newPage();
   const errors = [];
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/fonts\.(googleapis|gstatic)/.test(m.text() + (m.location()?.url || ''))) errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(e.message));
-  page.on('requestfailed', (r) => errors.push(`request failed: ${r.url()}`));
+  // Web fonts are optional (system fallbacks); anything else failing to load is an error.
+  const optional = (u) => /fonts\.(googleapis|gstatic)\.com/.test(u);
+  page.on('requestfailed', (r) => { if (!optional(r.url())) errors.push(`request failed: ${r.url()}`); });
   page.on('response', (r) => { if (r.status() >= 400) errors.push(`HTTP ${r.status()}: ${r.url()}`); });
 
   for (const view of VIEWS) {

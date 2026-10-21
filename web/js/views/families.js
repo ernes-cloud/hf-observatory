@@ -1,4 +1,6 @@
 import { load } from '../data.js';
+import { term } from '../glossary.js';
+import { pageHeader } from '../ui.js';
 import { card, hideTip, showTip, stackedBarList, stats } from '../charts.js';
 import { compact, esc, hfUrl, int, params as fmtParams, pct, task } from '../format.js';
 
@@ -19,13 +21,26 @@ export async function render(section, params) {
   const rels = index.relations;
   const series = rels.map((r) => ({ label: REL[r].label, color: REL[r].color }));
   const tot = index.totals;
-  section.innerHTML = `
-    <div class="view-head">
-      <h1 id="h-families">Family trees</h1>
-      <p>Most models on the Hub are built on top of another one. Using each model's declared <code>base_model</code>
-      and the Hub's relation tags, we can see which base models spawn the most fine-tunes, quantizations,
-      adapters and merges, and how deep those trees go.</p>
-    </div>`;
+  const topBase = index.bases[0];
+  const topFam = index.families[0];
+  const totalLinks = rels.reduce((a, r) => a + tot[r], 0) || 1;
+  section.replaceChildren(pageHeader({
+    id: 'h-families', eyebrow: 'Family trees', title: 'Who builds on whom',
+    lead: `Most models on Hugging Face are not trained from scratch: they start from an existing ${term('basemodel', 'base model')} and adapt it.
+      This page shows which base models have the most descendants and lets you explore each family tree.`,
+    takeaways: [
+      { value: pct(index.derived_models / index.live_models), text: 'of live models declare a base model they were built from' },
+      { value: topBase ? int(topBase.direct) : '–', text: topBase ? `models are built directly on <strong>${esc(topBase.id)}</strong>, more than on any other base` : '' },
+      { value: pct(tot.quantized / totalLinks), text: `of all derivatives are ${term('quantization', 'quantizations')}: compressed copies made to run on smaller hardware` },
+      { value: topFam ? esc(topFam.family) : '–', text: topFam ? `is the family with the most derived models (${int(topFam.total)})` : '' },
+    ],
+    howTo: [
+      `Four kinds of derivative: ${term('finetune', 'fine-tune')} (trained further), ${term('quantization', 'quantization')} (compressed), ${term('adapter', 'adapter')} (small add-on) and ${term('merge', 'merge')} (combination of models).`,
+      'In the first chart, click a base model name to open its tree below.',
+      'In the graph, the base model is in the centre; the first ring is its direct derivatives and the outer ring their derivatives. Bigger dots have more downloads.',
+      'The list under the graph can be expanded level by level with the + buttons.',
+    ],
+  }));
   section.append(stats([
     { label: 'Derived models', value: pct(index.derived_models / index.live_models), sub: `${int(index.derived_models)} of ${int(index.live_models)} live models declare a base model`, hero: true },
     { label: 'Fine-tunes', value: int(tot.finetune), sub: 'parent → child links' },

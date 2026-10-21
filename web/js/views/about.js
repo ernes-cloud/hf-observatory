@@ -1,5 +1,6 @@
 import { load } from '../data.js';
 import { dateTime, esc, int } from '../format.js';
+import { glossaryHtml } from '../glossary.js';
 
 // English version of the dataset's SCHEMA.md (the original is in Spanish).
 const FIELDS = [
@@ -29,7 +30,25 @@ export async function render(section) {
   try { meta = await load('meta.json'); } catch (e) { /* shown in footer */ }
   section.innerHTML = `
     <div class="prose">
-      <h1 id="h-about">About the data</h1>
+      <p class="eyebrow">Help</p>
+      <h1 id="h-about">Help &amp; glossary</h1>
+      <p class="lead">HF Observatory explains the open AI models published on <a href="https://huggingface.co">Hugging Face</a>:
+      which ones exist, which are used, how they relate to each other and which disappear. Everything is rebuilt daily from an open dataset.</p>
+      <h2>Where to start</h2>
+      <ul>
+        <li><a href="#finder"><strong>Find a model</strong></a> if you need a model for a project: start with a quick preset, then refine.</li>
+        <li><a href="#overview"><strong>Overview</strong></a> for the big picture: publishers, tasks, sizes, formats and licenses.</li>
+        <li><a href="#trends"><strong>Trends</strong></a> to see what is gaining or losing popularity.</li>
+        <li><a href="#families"><strong>Family trees</strong></a> to see which base models others build on.</li>
+        <li><a href="#graveyard"><strong>Graveyard</strong></a> for models that were deleted.</li>
+        <li><a href="#newsletter"><strong>Newsletter</strong></a> for a weekly summary in plain English.</li>
+      </ul>
+      <p>Every chart has a <strong>Table</strong> button with the exact numbers, and underlined terms show a definition when you hover or tap them.</p>
+      <h2 id="glossary">Glossary</h2>
+    </div>
+    ${glossaryHtml()}
+    <div class="prose">
+      <h2>About the data</h2>
       <p>HF Observatory is built entirely on <a href="https://github.com/686f6c61/radar-huggingface-dataset">radar-huggingface-dataset</a>,
       an open, versioned dataset of the Hugging Face model ecosystem produced by <a href="https://radar-huggingface.686f6c61.dev">HF//RADAR</a>
       and published under the <a href="https://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 (CC-BY-4.0)</a> license.
@@ -42,7 +61,7 @@ export async function render(section) {
       models that disappear from the Hub flagged as removed instead of deleting them.</p>
       <p>Every model in the dataset also has a technical model card written in Spanish by the radar. This site does not reproduce those cards;
       the short English descriptions in the model finder are generated from the structured metadata below.</p>
-      <h2>Fields (translated from the dataset schema)</h2>
+      <h2>Dataset fields (translated from the original Spanish schema)</h2>
       <dl>${FIELDS.map(([k, v]) => `<dt><code>${esc(k)}</code></dt><dd>${esc(v)}</dd>`).join('')}</dl>
       <h2>How this site uses it</h2>
       <p>A Python + DuckDB pipeline downloads the latest bulk file and a series of past releases, aggregates them into small JSON files and

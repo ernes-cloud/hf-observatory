@@ -1,4 +1,6 @@
 import { load } from '../data.js';
+import { term } from '../glossary.js';
+import { pageHeader } from '../ui.js';
 import { card, lineChart, seriesColor, sparkline, stats } from '../charts.js';
 import { authorUrl, compact, date, esc, hfUrl, int, pct, shortDate, signed, signedPct, task } from '../format.js';
 
@@ -8,15 +10,17 @@ let windowDays = '7';
 export async function render(section, params) {
   T = await load('trends.json');
   const windows = Object.keys(T.windows);
-  section.innerHTML = `
-    <div class="view-head">
-      <h1 id="h-trends">Trends</h1>
-      <p>How downloads move across ${int(T.snapshots.length)} dataset snapshots, from ${esc(date(T.snapshots[0]?.date))}
-      to ${esc(date(T.snapshots.at(-1)?.date))}. Hugging Face publishes downloads as a rolling 30-day window, so each point
-      is “downloads in the 30 days before that snapshot”. Rankings only compare models present in both snapshots, so the
-      radar tracking more models over time does not count as growth.</p>
-    </div>
-    <div id="trends-body"></div>`;
+  section.replaceChildren(pageHeader({
+    id: 'h-trends', eyebrow: 'Trends', title: 'What is rising and what is fading',
+    lead: `How popularity changes over time, measured across ${int(T.snapshots.length)} daily ${term('snapshot', 'snapshots')} from ${esc(date(T.snapshots[0]?.date))} to ${esc(date(T.snapshots.at(-1)?.date))}.`,
+    howTo: [
+      'Pick a period (7, 14 or 30 days). Every list compares the first and the last day of that period.',
+      `${term('downloads', 'Downloads')} are a rolling 30-day count, so “+5M” means the model was downloaded 5 million more times in the latest 30-day window than in the earlier one.`,
+      'The small lines (sparklines) show the path in between. A green end dot means up, red means down.',
+      'Only models tracked on both dates are compared. Models that appear for the first time are listed under “New to the radar” instead of “Rising”.',
+    ],
+  }));
+  section.insertAdjacentHTML('beforeend', '<div id="trends-body"></div>');
   const body = section.querySelector('#trends-body');
   if (T.snapshots.length < 2 || !windows.length) {
     body.innerHTML = '<div class="empty">Not enough history yet. Trends need at least two dataset releases about a week apart.</div>';

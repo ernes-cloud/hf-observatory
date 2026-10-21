@@ -439,7 +439,7 @@ export function fitModel(m, kind, s, b, runtime) {
     // MoE routing and less regular memory access cost some of the theoretical speed-up.
     const t = speedOf(active, bpp, s, bb, where, runtime, kvOf(m, s.ctx), p) * (active < p ? MOE_EFF : 1);
     let opt = { quant, bpp, qf: q, need, where, gpuMem: where === 'split' ? b.fast : undefined, low: LOW_QUALITY.has(quant) || q < 0.9,
-      tight: where === 'gpu' && need.total > b.fast * 0.95, tps: t, pp: prefillOf(m, where, b, runtime), download: p * bpp, repo, onTheFly };
+      tight: where === 'gpu' && need.total > b.fast * 0.92, /* the card says "Fits, but tight" from here */ tps: t, pp: prefillOf(m, where, b, runtime), download: p * bpp, repo, onTheFly };
     // Mixture of experts too big for the GPU: keeping the experts in RAM (llama.cpp --n-cpu-moe)
     // beats splitting whole layers, because attention and the shared weights stay on the GPU.
     if (where === 'split' && kind === 'gguf' && active < p && MOE_CPU_RUNTIMES.has(runtime)) {
@@ -650,7 +650,8 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       // Speculative decoding: faster single-user generation for a little extra memory (the draft).
       rt = s.runtime !== 'any' ? s.runtime : kind === 'st' ? 'vllm' : kind === 'gguf' ? 'llamacpp' : kind;
       specs = specOptions(m, rt, sm);
-      const spec = s.spec !== 'off' ? specs[0] || null : null;
+      // drafting helps one user; with many users it costs throughput, so it stays off unless chosen per card
+      const spec = s.spec !== 'off' && s.users <= 4 ? specs[0] || null : null;
       if (spec) {
         const extra = spec.draftP * 2 * 1.1 + (spec.method === 'mtp' ? fit.need.weights * 0.03 : 0);
         const room = (fit.where === 'gpu' ? b.fast : b.fast + b.slow) - fit.need.total;
@@ -681,7 +682,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (kindCfg) {
       for (const [cap, w] of Object.entries(kindCfg.weights)) if (can(cap)) rel += w * tagW;
       if (!has(m, 'tools') && toolFams.has(m.fam) && has(m, 'chat')) { rel += 2; why.push(`${m.fam} instruct models support tool calling`); }
-      if (m.p != null && m.p < kindCfg.minP) rel -= 2;
+      if (m.p != null && m.p < kindCfg.minP) { rel -= 2; why.push(`Under ${kindCfg.minP}B: may lose track in long agent runs`); }
       if (has(m, 'swe') && s.agent === 'coding') why.push('Trained or evaluated for agentic coding (SWE-style tasks)');
       if (has(m, 'computer') && s.agent === 'computer') why.push('Built for GUI / computer use');
       if (has(m, 'sql') && s.agent === 'data') why.push('Trained for text-to-SQL');
@@ -737,8 +738,6 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (kind === 'mlx' && !m.mlx) penalty('No MLX build tracked', 1);
     const score = parts.reduce((t, [, v]) => t + v, 0);
 
-    if (m.dl >= 10000) why.push(`${fmtCompact(m.dl)} downloads last month`);
-    else if (m.likes >= 50) why.push(`${m.likes} likes`);
     if (age < 120) why.push('Released in the last 4 months');
     if (official) why.push('From the original lab');
     if (m.a) why.push(`Mixture of experts: ${m.a}B of ${round1(m.p)}B parameters work per token, so it runs like a ${m.a}B model`);
@@ -770,8 +769,3 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
 const round1 = (x) => Math.round(x * 10) / 10;
 /** Context sizes the way models advertise them: 131072 → 128K. */
 export const fmtTokens = (n) => (n >= 1048576 ? `${round1(n / 1048576)}M` : `${Math.round(n / 1024)}K`);
-function fmtCompact(n) {
-  if (n >= 1e6) return `${round1(n / 1e6)}M`;
-  if (n >= 1e3) return `${round1(n / 1e3)}K`;
-  return String(n);
-}

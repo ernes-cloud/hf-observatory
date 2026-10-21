@@ -60,13 +60,23 @@ async function check(page, errors, label) {
 // One random interaction with whatever is visible and enabled.
 let attempt = '';
 async function step(page) {
-  const kind = pick(['preset', 'select', 'select', 'radio', 'radio', 'check', 'range', 'range', 'cfg', 'cfg', 'cfg', 'tab', 'sort', 'more', 'fav', 'fav']);
+  const kind = pick(['preset', 'select', 'select', 'radio', 'radio', 'check', 'range', 'range', 'cfg', 'cfg', 'cfg', 'tab', 'sort', 'more', 'fav', 'fav', 'adv', 'key']);
   switch (kind) {
+    case 'adv': { attempt = 'toggle more settings'; await page.click('#a-adv > summary', { timeout: 5000 }); return attempt; }
+    case 'key': {
+      // keyboard on the run tabs (ARIA tabs pattern)
+      const n = await page.locator('.run-tab').count();
+      if (!n) return 'no tabs';
+      attempt = 'tab keys';
+      await page.locator('.run-tab[aria-selected="true"]').first().focus();
+      await page.keyboard.press(pick(['ArrowRight', 'ArrowLeft', 'End', 'Home']));
+      return attempt;
+    }
     case 'fav': {
       const saves = page.locator('.run-panel:not([hidden]) .fav-save');
       if (rnd() < 0.4 && await saves.count()) { attempt = 'fav save'; await saves.first().click({ timeout: 5000 }); return attempt; }
       if (!(await page.isVisible('.fav'))) { if (await page.$('.favs > summary')) { attempt = 'fav panel'; await page.click('.favs > summary', { timeout: 5000 }); return attempt; } return 'no favs'; }
-      const acts = await page.$$eval('.fav [data-fav-act]', (xs) => xs.filter((x) => x.offsetParent).map((x, i) => x.dataset.favAct));
+      const acts = await page.$$eval('.fav [data-fav-act]', (xs) => xs.filter((x) => x.checkVisibility()).map((x, i) => x.dataset.favAct));
       if (!acts.length) return 'no fav actions';
       const act = pick(acts);
       attempt = `fav ${act}`;
@@ -82,24 +92,28 @@ async function step(page) {
       return `preset ${i}`;
     }
     case 'select': {
-      const sels = await page.$$eval('#advisor-form select', (xs) => xs.filter((x) => x.offsetParent && !x.disabled).map((x) => ({ name: x.name, values: [...x.options].filter((o) => !o.disabled).map((o) => o.value) })));
+      const sels = await page.$$eval('#advisor-form select', (xs) => xs.filter((x) => x.checkVisibility() && !x.disabled).map((x) => ({ name: x.name, values: [...x.options].filter((o) => !o.disabled).map((o) => o.value) })));
       if (!sels.length) return 'no select';
       const s = pick(sels); const v = pick(s.values);
-      await page.selectOption(`#advisor-form select[name="${s.name}"]`, v);
+      attempt = `select ${s.name}=${v}`;
+      await page.locator(`#advisor-form select[name="${s.name}"]`).scrollIntoViewIfNeeded({ timeout: 5000 });
+      await page.selectOption(`#advisor-form select[name="${s.name}"]`, v, { timeout: 5000 });
       return `select ${s.name}=${v}`;
     }
     case 'radio':
     case 'check': {
       const type = kind === 'radio' ? 'radio' : 'checkbox';
-      const items = await page.$$eval(`#advisor-form input[type="${type}"]`, (xs) => xs.map((x, i) => ({ i, id: `${x.name}=${x.value}`, vis: !!(x.offsetParent || x.closest('label')?.offsetParent) })).filter((x) => x.vis));
+      const items = await page.$$eval(`#advisor-form input[type="${type}"]`, (xs) => xs.map((x, i) => ({ i, id: `${x.name}=${x.value}`, vis: !!(x.checkVisibility() || x.closest('label')?.checkVisibility()) })).filter((x) => x.vis));
       if (!items.length) return `no ${type}`;
       const it = pick(items);
       attempt = `${type} ${it.id}`;
-      await page.locator(`#advisor-form input[type="${type}"]`).nth(it.i).click({ force: true, timeout: 5000 });
+      const el = page.locator(`#advisor-form input[type="${type}"]`).nth(it.i);
+      await el.evaluate((x) => x.scrollIntoView({ block: 'center' }));
+      await el.click({ force: true, timeout: 5000 });
       return attempt;
     }
     case 'range': {
-      const ranges = await page.$$eval('#advisor-form input[type="range"]', (xs) => xs.filter((x) => x.offsetParent).map((x) => ({ name: x.name, min: +x.min, max: +x.max, step: +x.step || 1 })));
+      const ranges = await page.$$eval('#advisor-form input[type="range"]', (xs) => xs.filter((x) => x.checkVisibility()).map((x) => ({ name: x.name, min: +x.min, max: +x.max, step: +x.step || 1 })));
       if (!ranges.length) return 'no range';
       const r = pick(ranges);
       const v = r.min + Math.round((rnd() * (r.max - r.min)) / r.step) * r.step;

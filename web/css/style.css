@@ -12,6 +12,7 @@
   --border: rgba(11, 11, 11, 0.10);
   --accent: #2a78d6;
   --accent-ink: #1c5cab;
+  --accent-strong: #1f66c1;
   --accent-wash: rgba(42, 120, 214, 0.10);
   --series-1: #2a78d6;
   --series-2: #eb6834;
@@ -43,6 +44,7 @@
     --border: rgba(255, 255, 255, 0.10);
     --accent: #3987e5;
     --accent-ink: #86b6ef;
+    --accent-strong: #1f66c1;
     --accent-wash: rgba(57, 135, 229, 0.16);
     --series-1: #3987e5;
     --series-2: #d95926;
@@ -71,6 +73,7 @@
   --border: rgba(255, 255, 255, 0.10);
   --accent: #3987e5;
   --accent-ink: #86b6ef;
+  --accent-strong: #1f66c1;
   --accent-wash: rgba(57, 135, 229, 0.16);
   --series-1: #3987e5;
   --series-2: #d95926;
@@ -158,8 +161,8 @@ main:focus { outline: none; }
 .btn { font: inherit; font-size: .8rem; color: var(--ink-2); background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
 .btn:hover { background: var(--surface-2); color: var(--ink); }
 .btn[aria-pressed="true"] { background: var(--accent-wash); color: var(--accent-ink); border-color: transparent; }
-.btn-primary { background: var(--accent); color: #fff; border-color: transparent; padding: 7px 14px; font-size: .9rem; }
-.btn-primary:hover { background: var(--accent-ink); color: #fff; }
+.btn-primary { background: var(--accent-strong); color: #fff; border-color: transparent; padding: 7px 14px; font-size: .9rem; }
+.btn-primary:hover { background: #174f9e; color: #fff; }
 
 /* Stat tiles */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -415,7 +418,7 @@ h1 { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.1rem); letter-spacing: -0.015em;
 .advisor-form { display: grid; gap: 14px; }
 .step { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 14px 16px 16px; margin: 0; min-width: 0; box-shadow: var(--shadow); }
 .step legend { font-weight: 650; font-size: 1rem; padding: 0 6px; display: inline-flex; align-items: center; gap: 8px; }
-.step-n { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; font-size: .8rem; font-weight: 700; }
+.step-n { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-strong); color: #fff; font-size: .8rem; font-weight: 700; }
 .step .filters { margin-top: 10px; }
 .step .checks { margin-top: 12px; }
 .use-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); margin-top: 6px; }
@@ -625,3 +628,24 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 8px 0 2p
 @media (max-width: 520px) { .score-list li { grid-template-columns: minmax(0, 1fr) 3.2em; } .score-bar { grid-column: 1 / -1; grid-row: 2; } }
 /* Off-screen result cards skip layout and paint until scrolled near (big lists re-render fast). */
 .advice { content-visibility: auto; contain-intrinsic-size: auto 560px; }
+
+/* ---------- Advisor: sprint 3 (guided form, accessible tabs, readable cards) ---------- */
+.adv { margin-top: 4px; }
+.adv > summary { cursor: pointer; list-style: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 12px 14px; border: 1px solid var(--grid); border-radius: 10px; background: var(--surface); }
+.adv > summary::-webkit-details-marker { display: none; }
+.adv > summary::before { content: "▸"; color: var(--muted); }
+.adv[open] > summary::before { content: "▾"; }
+.adv-title { font-weight: 650; }
+.adv-sum { color: var(--muted); font-size: .85rem; }
+.adv[open] > summary { margin-bottom: 8px; }
+.term.help { display: inline-grid; place-items: center; width: 1.25em; height: 1.25em; margin-left: 2px; border-radius: 50%; border: 1px solid var(--grid); font-size: .75rem; font-weight: 700; text-decoration: none; color: var(--ink-2); vertical-align: middle; }
+.term.help:hover, .term.help:focus-visible { border-color: var(--accent); color: var(--accent-ink); }
+.code-row pre.long { max-height: 360px; overflow: auto; position: relative; }
+.code-more { position: sticky; bottom: 0; left: 0; display: block; margin: 8px 0 0; }
+.metric-label .term.help { font-size: .7rem; }
+@media (max-width: 640px) {
+  .run-tab, .advice-actions .btn, .code-actions .btn, .fav-actions .btn, .score summary, .fav-preview summary { min-height: 40px; }
+  .compare-check { min-height: 40px; display: inline-flex; align-items: center; gap: 6px; padding: 0 4px; }
+  .run-tab { padding-inline: 12px; }
+  .adv > summary { min-height: 44px; }
+}

@@ -27,6 +27,15 @@ export const GLOSSARY = {
   merge: ['Merge', 'A model created by combining the weights of two or more existing models.'],
   family: ['Family', 'A group of related models, such as everything built on Qwen or Llama, detected from model names and declared base models.'],
   snapshot: ['Snapshot', 'A copy of the dataset at a point in time. The dataset publishes about three a day; this site compares them to measure change.'],
+  context: ['Context window', 'How much text the model can look at at once (your conversation, documents, code), counted in tokens; 1,000 tokens ≈ 750 English words. A longer window needs more memory.'],
+  kvcache: ['KV cache', 'Memory the model uses to remember the conversation so far. It grows with the context length and with each simultaneous user. Storing it in 8-bit halves it with almost no quality loss.'],
+  speculative: ['Speculative decoding', 'A trick that makes generation faster: a tiny “draft” model (or extra heads built into the model, MTP) guesses several words ahead and the big model checks them all at once. Same answers, typically 1.5–2.5× faster for one user.'],
+  moe: ['Mixture of experts (MoE)', 'A model split into many “experts” of which only a few work on each word. A 30B-A3B model must fit in memory as 30B but runs about as fast as a 3B one.'],
+  thinking: ['Thinking', 'Some models reason step by step before answering. It improves hard answers but takes longer; hybrid models let you switch it off for quick replies.'],
+  runtime: ['Runtime', 'The program that runs the model. Ollama and LM Studio are the easiest; llama.cpp gives full control; vLLM and SGLang are GPU servers for many users; MLX is Apple’s.'],
+  quantlevel: ['Quantization level', 'How much the model is compressed. Q8 ≈ lossless, Q6/Q5 near-lossless, Q4 the usual sweet spot, Q3/Q2 noticeably worse. FP8, NVFP4, AWQ and MXFP4 are the formats GPU servers use.'],
+  tps: ['Tokens per second', 'How fast the answer is written. A token is about ¾ of a word: 10 tokens/s is about reading speed, 30+ feels instant.'],
+  ttft: ['Time to first token', 'How long the model takes to read your prompt before it starts answering. It grows with prompt length and depends on the GPU’s compute, not its memory speed.'],
   conversational: ['Chat / instruct', 'Models tuned to follow instructions and hold a conversation, as opposed to raw “base” models.'],
 };
 

@@ -1,11 +1,11 @@
 import { load } from '../data.js';
 import { compact, esc, hfUrl, int, language, LICENSE_FAMILY, task } from '../format.js';
-import { term } from '../glossary.js';
+import { GLOSSARY, term } from '../glossary.js';
 import { pageHeader } from '../ui.js';
 import { CPU_MEMORY, GPUS, MAC_CHIPS, PRESETS, RAM_SIZES, UNIFIED, UNIFIED_GROUPS, allGpus, gpuById } from '../advisor/hardware.js';
 import {
   AGENT_KINDS, CTX_STOPS, LLM_USES, RUNTIMES, SIZE_STOPS, USER_STOPS, USES,
-  agentKind, capacity, recommend, refit, runtimeKinds, speedLabel, thinkingOf,
+  agentKind, capacity, memNeeded, recommend, refit, runtimeKinds, speedLabel, thinkingOf,
 } from '../advisor/engine.js';
 import { commandsFor, defaultOptions, defaultSpecTokens } from '../advisor/commands.js';
 import { addFavorite, exportFavorites, importFavorites, isEdited, lintCompose, loadFavorites, packFavorite, persistent, removeFavorite, unpackFavorite, updateFavorite } from '../advisor/favorites.js';
@@ -35,6 +35,7 @@ let shown = PAGE;
 let compare = new Set();
 const cardOpts = new Map(); // model id → per-model options from the Customize panel
 const openCfg = new Set(); // model ids whose Customize panel is open
+let ctxBeforeAgents = null; // context before picking Agents raised it
 const cardCmds = new Map(); // run-tab contents per card, drawn on demand
 const favUi = { open: false, editing: null, confirm: null, msg: '', shared: null }; // saved-compose panel state
 let els = {};
@@ -122,6 +123,8 @@ function writeHash() {
 
 /* --------------------------------------------------------------- form */
 
+/** A small "?" next to a label that explains the term (tooltip on hover, focus or tap). */
+const help = (key) => `<button type="button" class="term help" data-term="${key}" aria-describedby="tooltip" aria-label="What is ${esc(GLOSSARY[key]?.[0] || key)}?">?</button>`;
 const option = (v, label, sel) => `<option value="${esc(v)}"${String(v) === String(sel) ? ' selected' : ''}>${esc(label)}</option>`;
 
 function formHtml() {
@@ -179,21 +182,23 @@ function formHtml() {
       <label class="inline-check" data-hw="offload"><input type="checkbox" name="offload"> Let big models overflow into system RAM (Ollama / llama.cpp). Bigger models, much slower.</label>
     </fieldset>
 
+    <details class="adv" id="a-adv">
+      <summary><span class="adv-title">More settings</span> <span class="adv-sum" id="a-adv-sum"></span></summary>
     <fieldset class="step">
       <legend><span class="step-n">3</span> How you will run it</legend>
       <div class="filters">
-        <div class="field"><label for="a-runtime">Runtime</label>
+        <div class="field"><label for="a-runtime">Runtime</label> ${help('runtime')}
           <select id="a-runtime" name="runtime">${option('any', 'No preference', state.runtime)}${Object.entries(RUNTIMES).map(([k, r]) => option(k, r.label, state.runtime)).join('')}</select></div>
-        <div class="field" data-llm><label for="a-spec">Speculative decoding</label>
+        <div class="field" data-llm><label for="a-spec">Speculative decoding</label> ${help('speculative')}
           <select id="a-spec" name="spec">${option('auto', 'Use when available', state.spec)}${option('off', 'Off', state.spec)}</select></div>
-        <div class="field" data-llm><label for="a-think">Thinking (hybrid models)</label>
+        <div class="field" data-llm><label for="a-think">Thinking (hybrid models)</label> ${help('thinking')}
           <select id="a-think" name="think">${option('default', 'Model default', state.think)}${option('on', 'On', state.think)}${option('off', 'Off: answer directly', state.think)}</select></div>
-        <div class="field" data-llm><label for="a-kv">KV cache precision</label>
+        <div class="field" data-llm><label for="a-kv">KV cache precision</label> ${help('kvcache')}
           <select id="a-kv" name="kv">${option('f16', '16-bit (default)', state.kv)}${option('q8', '8-bit: half the memory', state.kv)}${option('q4', '4-bit: least memory', state.kv)}</select></div>
       </div>
       <p class="note" data-llm id="spec-note"></p>
       <div class="slider-field" data-llm>
-        <div class="slider-head"><label for="a-ctx">Context window</label><output id="o-ctx"></output></div>
+        <div class="slider-head"><span><label for="a-ctx">Context window</label> ${help('context')}</span><output id="o-ctx"></output></div>
         <input type="range" id="a-ctx" name="ctxIdx" min="0" max="${CTX_STOPS.length - 1}" step="1">
         <div class="ticks">${CTX_STOPS.map((c) => `<span>${ctxLabel(c)}</span>`).join('')}</div>
         <p class="note">How much text the model sees at once: a long chat, a big document or a codebase. Longer context needs more memory.</p>
@@ -224,7 +229,7 @@ function formHtml() {
         <div class="ticks two"><span>Best answers</span><span>Balanced</span><span>Fastest replies</span></div>
       </div>
       <div class="sub-block" data-llm>
-        <p class="sub-label" id="arch-label">Architecture</p>
+        <p class="sub-label"><span id="arch-label">Architecture</span> ${help('moe')}</p>
         <div class="segmented pill-switch" role="radiogroup" aria-labelledby="arch-label">
           <label><input type="radio" name="archFilter" value="any"> Any</label>
           <label><input type="radio" name="archFilter" value="dense"> Dense only</label>
@@ -244,6 +249,7 @@ function formHtml() {
         <label><input type="checkbox" name="uncensored"> Include uncensored variants</label>
       </div>
     </fieldset>
+    </details>
     <div class="form-actions"><button type="button" class="btn" id="a-share">Copy link to these settings</button><button type="button" class="btn" id="a-reset">Start over</button><span class="note" id="a-shared" role="status" aria-live="polite"></span></div>
   </form>`;
 }
@@ -297,8 +303,13 @@ function readForm(changed) {
   };
   // Picking an agent type sets a sensible context for it (still adjustable).
   if (state.use === 'agents' && (prevUse !== 'agents' || prevAgent !== state.agent) && (changed === 'use' || changed === 'agent')) {
+    if (prevUse !== 'agents') ctxBeforeAgents = state.ctx;
     state.ctx = Math.max(state.ctx, agentKind(state.agent).ctx);
+  } else if (changed === 'use' && prevUse === 'agents' && ctxBeforeAgents != null) {
+    state.ctx = ctxBeforeAgents; // the agent's longer context was not the visitor's choice
+    ctxBeforeAgents = null;
   }
+  if (changed === 'ctxIdx') ctxBeforeAgents = null;
   // Runtimes that cannot work on the chosen hardware, Mac memory sizes that do not exist for the chip, etc.
   state = sanitize(state);
   syncForm();
@@ -341,6 +352,10 @@ function decorate() {
   els.o.ctx.textContent = `${ctxLabel(s.ctx)} tokens ≈ ${s.ctx >= 1048576 ? '750K' : int(Math.round(s.ctx * 0.75 / 100) * 100)} words`;
   els.o.users.textContent = s.users === 1 ? 'Just me' : `${s.users} at once`;
   els.o.pr.textContent = s.priority <= 20 ? 'Best answers' : s.priority >= 80 ? 'Fastest replies' : s.priority < 50 ? 'Leaning to quality' : s.priority > 50 ? 'Leaning to speed' : 'Balanced';
+  // what "More settings" holds right now, readable while it is closed
+  const filters = [s.archFilter !== 'any', !!s.must, !!s.lang, s.commercial, s.officialOnly, s.hideGated, s.uncensored].filter(Boolean).length;
+  els.advSum.textContent = [isLLM && (s.runtime === 'any' ? 'Any runtime' : RUNTIMES[s.runtime]?.label), isLLM && `${ctxLabel(s.ctx)} context`, isLLM && (s.users > 1 ? `${s.users} users` : '1 user'),
+    els.o.size.textContent, isLLM && els.o.pr.textContent, filters && `${filters} filter${filters > 1 ? 's' : ''}`].filter(Boolean).join(' · ');
 }
 
 /* --------------------------------------------------------------- results */
@@ -443,14 +458,17 @@ function resultCard(r, i) {
       <div class="metric fit-${status[0]}">
         <span class="metric-label">Memory</span>
         <span class="metric-value">${fit.need ? `≈ ${gb(fit.need.total)}` : 'small'}</span>
-        <span class="metric-sub">${esc(fit.quant)}${isLLM && fit.need ? ` · ${gb(fit.need.weights)} weights + ${gb(fit.need.kv)} context${fit.need.draft ? ` + ${gb(fit.need.draft)} ${fit.spec?.draft ? 'draft' : 'MTP'}` : ''}` : ''}${fit.where === 'moe-cpu' && fit.need?.ram ? ` · ${gb(fit.need.gpu)} on the GPU, ${gb(fit.need.ram)} of experts in RAM` : ''}</span>
+        <span class="metric-sub">${isLLM ? term('quantlevel', fit.quant) : esc(fit.quant)}${isLLM && fit.need ? ` · ${gb(fit.need.weights)} weights + ${gb(fit.need.kv)} context${fit.need.draft ? ` + ${gb(fit.need.draft)} ${fit.spec?.draft ? 'draft' : 'MTP'}` : ''}` : ''}${fit.where === 'moe-cpu' && fit.need?.ram ? ` · ${gb(fit.need.gpu)} on the GPU, ${gb(fit.need.ram)} of experts in RAM` : ''}</span>
         ${used != null ? `<div class="meter" role="img" aria-label="Uses about ${Math.round(used)}% of your memory"><span style="width:${used.toFixed(1)}%"></span></div>` : ''}
         <span class="metric-status">${status[1]}</span>
       </div>
       ${isLLM && sp ? `<div class="metric speed-${sp[0]}">
-        <span class="metric-label">Speed (estimate)</span>
+        ${+o.users > 1 ? `<span class="metric-label">Throughput for ${o.users} users ${help('tps')}</span>
+        <span class="metric-value">${int(Math.round(fit.tps * o.users))} <small>tokens/s in total</small></span>
+        <span class="metric-sub">≈ ${tps(fit.tps)} tokens/s for each user (≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute)${fit.spec ? ` · ${tps(fit.tpsBase)} without ${esc(fit.spec.label)}` : ''}</span>`
+    : `<span class="metric-label">Speed (estimate) ${help('tps')}</span>
         <span class="metric-value">${tps(fit.tps)} <small>tokens/s</small></span>
-        <span class="metric-sub">≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute${fit.spec ? ` · ${tps(fit.tpsBase)} without ${esc(fit.spec.label)}` : ''}${+o.users > 1 ? ` · per user with ${o.users} at once, ≈ ${int(Math.round(fit.tps * o.users))} tokens/s in total` : ''}</span>
+        <span class="metric-sub">≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute${fit.spec ? ` · ${tps(fit.tpsBase)} without ${esc(fit.spec.label)}` : ''}</span>`}
         ${fit.pp ? `<span class="metric-sub" title="Time to first token: reading the prompt is limited by compute (TFLOPS), not memory bandwidth">${ttftText(fit.pp, +o.ctx)}</span>` : ''}
         <span class="metric-status">${sp[1]}</span>
       </div>` : ''}
@@ -461,24 +479,25 @@ function resultCard(r, i) {
       </div>
     </div>
     ${fit.low ? '<p class="note warn-note">This quantization loses noticeable quality; a smaller model at higher precision may answer better.</p>' : ''}
+    ${cmds.length ? `<div class="run">
+      <div class="run-tabs" role="tablist" aria-label="Ways to run ${esc(m.id)}">${cmds.map((c, k) => `<button type="button" role="tab" class="run-tab" id="${id}-${k}-tab" data-tab="${id}-${k}" aria-controls="${id}-${k}" aria-selected="${k === 0}" tabindex="${k === 0 ? 0 : -1}">${esc(c.label)}</button>`).join('')}</div>
+      ${cmds.map((c, k) => (k ? `<div class="run-panel" role="tabpanel" id="${id}-${k}" aria-labelledby="${id}-${k}-tab" hidden data-lazy></div>` : `<div class="run-panel" role="tabpanel" id="${id}-${k}" aria-labelledby="${id}-${k}-tab">${panelHtml(c)}</div>`)).join('')}
+    </div>` : ''}
     ${r.why.length ? `<ul class="why">${r.why.slice(0, 5).map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
     ${r.parts ? scoreHtml(r, i) : ''}
-    ${cmds.length ? `<div class="run">
-      <div class="run-tabs" role="tablist">${cmds.map((c, k) => `<button type="button" role="tab" class="run-tab" data-tab="${id}-${k}" aria-selected="${k === 0}">${esc(c.label)}</button>`).join('')}</div>
-      ${cmds.map((c, k) => (k ? `<div class="run-panel" id="${id}-${k}" hidden data-lazy></div>` : `<div class="run-panel" id="${id}-${k}">${panelHtml(c)}</div>`)).join('')}
-    </div>` : ''}
   </article>`;
 }
 
 /** One run tab: the code with Copy / Download / Save, and its note. Copy and Download read the code from the page. */
 function panelHtml(c) {
-  return `${c.code ? `<div class="code-row"><pre><code>${esc(c.code)}</code></pre><div class="code-actions"><button type="button" class="btn copy">Copy</button>${c.yaml ? `<button type="button" class="btn dl">Download</button><button type="button" class="btn fav-save" data-label="${esc(c.label)}" title="Keep this compose in your saved list to edit or reuse later">☆ Save</button>` : ''}</div></div>` : ''}
+  const lines = c.code ? c.code.split('\n').length : 0;
+  return `${c.code ? `<div class="code-row"><pre${lines > 22 ? ' class="long"' : ''}><code>${esc(c.code)}</code>${lines > 22 ? `<button type="button" class="btn code-more">Show all ${lines} lines</button>` : ''}</pre><div class="code-actions"><button type="button" class="btn copy">Copy</button>${c.yaml ? `<button type="button" class="btn dl">Download</button><button type="button" class="btn fav-save" data-label="${esc(c.label)}" title="Keep this compose in your saved list to edit or reuse later">☆ Save</button>` : ''}</div></div>` : ''}
         ${c.note ? `<p class="note">${c.note}</p>` : ''}`;
 }
 
 /** Show a run tab, drawing its panel the first time. */
 function activateTab(run, tab) {
-  run.querySelectorAll('.run-tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
+  run.querySelectorAll('.run-tab').forEach((t) => { t.setAttribute('aria-selected', String(t === tab)); t.tabIndex = t === tab ? 0 : -1; });
   run.querySelectorAll('.run-panel').forEach((p) => {
     p.hidden = p.id !== tab.dataset.tab;
     if (!p.hidden && p.hasAttribute('data-lazy')) {
@@ -629,6 +648,7 @@ function emptyHtml() {
     s.archFilter !== 'any' && ['Allow both dense and MoE models', { archFilter: 'any' }],
     (s.sizeLo > 0 || s.sizeHi < SIZE_STOPS.length - 1) && ['Any model size', { sizeLo: 0, sizeHi: SIZE_STOPS.length - 1 }],
     s.ctx > 8192 && [`Context ${ctxLabel(Math.max(8192, s.ctx / 4))} instead of ${ctxLabel(s.ctx)}`, { ctx: Math.max(8192, s.ctx / 4) }],
+    s.ctx > 32768 && s.kv === 'f16' && [`32K context with an 8-bit KV cache`, { ctx: 32768, kv: 'q8' }],
     s.users > 1 && ['One user at a time', { users: 1 }],
     s.kv === 'f16' && ['8-bit KV cache', { kv: 'q8' }],
     s.hw === 'gpu' && !gpuById(s.gpu)?.unified && !s.offload && ['Allow overflow into system RAM', { offload: true }],
@@ -641,8 +661,16 @@ function emptyHtml() {
   const found = tries.map(([label, patch]) => [label, patch, recommend(A, sanitize({ ...s, ...patch, langName: lang })).total])
     .filter((x) => x[2] > 0).sort((a, b) => b[2] - a[2]).slice(0, 5);
   els.fixes = found.map((x) => x[1]);
+  // say why, with numbers: usually the context cache or the smallest size allowed
+  const b = els.lastBudget;
+  const pool = b ? b.fast || b.slow : 0;
+  const kv = LLM_USES.has(s.use) ? memNeeded(8, 0.6, s).kv : 0;
+  const smallest = SIZE_STOPS[s.sizeLo];
+  const cause = !pool ? ''
+    : kv > pool * 0.5 ? `${ctxLabel(s.ctx)} of context${s.users > 1 ? ` for ${s.users} users` : ''} alone needs ≈ ${gb(kv)} for an 8B model, and your machine has ≈ ${gb(pool)} for models.`
+      : s.sizeLo > 0 && smallest * 0.6 > pool ? `Even at 4-bit, a ${sizeLabel(smallest)} model needs ≈ ${gb(smallest * 0.6)}, and your machine has ≈ ${gb(pool)} for models.` : '';
   return `<div class="empty">
-    <p><strong>Nothing fits these settings.</strong></p>
+    <p><strong>Nothing fits these settings.</strong>${cause ? ` ${esc(cause)}` : ''}</p>
     ${found.length ? `<p>Changing one thing brings models back:</p>
       <div class="fix-list">${found.map(([label, , n], i) => `<button type="button" class="btn fix" data-fix="${i}">${esc(label)} <span class="muted">→ ${int(n)} models</span></button>`).join('')}</div>`
     : '<p>Try a bigger machine, a smaller context or fewer filters.</p>'}
@@ -695,6 +723,8 @@ function renderFavs() {
 }
 function drawFavs() {
   const list = loadFavorites();
+  // nothing saved yet: no empty panel in the way (it appears with the first ☆ Save or a shared link)
+  if (!list.length && !favUi.shared && !favUi.msg) { els.favs.innerHTML = ''; return; }
   const keep = persistent();
   els.favs.innerHTML = `<details class="card favs"${favUi.open ? ' open' : ''}>
     <summary><span class="favs-title">★ Saved composes</span> <span class="count-pill">${list.length}</span></summary>
@@ -872,8 +902,16 @@ export async function render(section, params) {
     hwNote: section.querySelector('#hw-note'),
     ngpuLabel: section.querySelector('#a-ngpu-label'),
     sizeFill: section.querySelector('#size-fill'),
+    advSum: section.querySelector('#a-adv-sum'),
     o: { size: section.querySelector('#o-size'), ctx: section.querySelector('#o-ctx'), users: section.querySelector('#o-users'), pr: section.querySelector('#o-pr') },
   };
+  // "More settings" stays as the visitor left it; a shared link with such settings opens it
+  const adv = section.querySelector('#a-adv');
+  const advKeys = ['runtime', 'spec', 'think', 'kv', 'ctx', 'users', 'sizeLo', 'sizeHi', 'priority', 'archFilter', 'must', 'lang', 'commercial', 'officialOnly', 'hideGated', 'uncensored'];
+  let advOpen = false;
+  try { advOpen = localStorage.getItem('hfo-advisor-adv') === '1'; } catch { /* storage blocked */ }
+  adv.open = advOpen || advKeys.some((k) => params?.has(KEYS[k]));
+  adv.addEventListener('toggle', () => { try { localStorage.setItem('hfo-advisor-adv', adv.open ? '1' : '0'); } catch { /* storage blocked */ } });
   syncForm();
   refresh();
   receiveShared(params);
@@ -926,6 +964,8 @@ export async function render(section, params) {
       activateTab(tab.closest('.run'), tab);
       return;
     }
+    const more = e.target.closest('.code-more');
+    if (more) { more.closest('pre').classList.remove('long'); more.remove(); return; }
     if (e.target.id === 'a-clear-compare') { compare.clear(); refresh(false); return; }
     const toggle = e.target.closest('.cfg-toggle');
     if (toggle) {
@@ -963,6 +1003,17 @@ export async function render(section, params) {
       b.textContent = 'Press Ctrl+C';
     }
     setTimeout(() => { b.textContent = 'Copy'; }, 1800);
+  });
+  // Run tabs follow the ARIA tabs pattern: arrows / Home / End move between them
+  section.querySelector('.advisor-results').addEventListener('keydown', (e) => {
+    const tab = e.target.closest?.('.run-tab');
+    if (!tab || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    const tabs = [...tab.parentElement.querySelectorAll('.run-tab')];
+    const i = tabs.indexOf(tab);
+    const next = tabs[e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+    e.preventDefault();
+    activateTab(tab.closest('.run'), next);
+    next.focus();
   });
   // Customize panel: any change rewrites that card's estimates and commands
   let cfgTimer;

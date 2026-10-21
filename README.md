@@ -190,11 +190,18 @@ npm run screenshots                       # refresh docs/screenshots/
   months lose points; capability tags (tools, SWE, code…) count fully only for original labs or widely used
   models, and labs' own models get the abilities their tool / reasoning parsers show; little-known third-party
   uploads lose points; 2–3-bit builds are never offered for dense models under 30B and are penalised elsewhere;
-  a quantization that leaves under 5% memory headroom is avoided when another fits. Base, OCR, guard, reward,
+  a quantization that leaves under 8% memory headroom is avoided when another fits. Base, OCR, guard, reward,
   embedding and router checkpoints never appear as assistants; research sweeps (seed / step / checkpoint
   uploads) are dropped by the pipeline. A single-quant upload (e.g. "…-Q4_K_M-GGUF") is only offered at the
   quant it holds, and GGUF candidates named for another format (NVFP4, AWQ…) are rejected. On a home GPU for
   one user, llama.cpp / Ollama is preferred unless a GPU server is clearly (1.5×) faster.
+* **Form and cards**: the use and the machine come first; runtime, context, users, size, quality/speed and filters
+  sit under "More settings", whose summary line shows their current values (it opens by itself for shared links
+  that set them). Jargon has "?" explanations (context, KV cache, speculative decoding, MoE, thinking, runtime,
+  quantization levels, tokens/s). Each card puts the run command right after memory and speed; with several
+  users it leads with total throughput, and speculative decoding stays off above 4 users unless chosen per card.
+  Run tabs follow the ARIA tabs pattern (arrow keys, Home, End); long files fold to 360 px. The saved-composes
+  panel appears with the first save. When nothing fits, the page says why in numbers and offers one-click fixes.
 * Without config data, the advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
   ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size; for mixture-of-experts models with the
   geometric mean of active and total parameters, and scaled by the attention type read from the Hub

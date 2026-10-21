@@ -61,6 +61,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Advisor engine unit tests
+        run: node --test tests/advisor-engine.test.mjs
+
       - name: Headless smoke test
         run: |
           npm install --no-save --no-package-lock playwright@1.56.1

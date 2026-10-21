@@ -5,6 +5,7 @@
   "description": "Static site exploring the Hugging Face model ecosystem (data: radar-huggingface-dataset, CC-BY-4.0)",
   "scripts": {
     "serve": "python3 -m http.server 8000 --directory web",
+    "test": "node --test tests/advisor-engine.test.mjs",
     "test:e2e": "node tests/smoke.mjs",
     "screenshots": "node tests/smoke.mjs --screenshots docs/screenshots"
   },

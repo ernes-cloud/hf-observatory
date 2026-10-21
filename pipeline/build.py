@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hfo import finder, overview  # noqa: E402
+from hfo import finder, graveyard, overview, trees  # noqa: E402
 from hfo.common import connect, write_json  # noqa: E402
 from hfo.sources import REPO, build_latest, list_versions, log  # noqa: E402
 
@@ -58,10 +58,18 @@ def main(argv: list[str] | None = None) -> None:
     sizes = {}
     sizes["overview.json"] = write_json(out / "overview.json", overview.build(con, meta))
     sizes["finder.json"] = write_json(out / "finder.json", finder.build(con))
+    sizes["graveyard.json"] = write_json(out / "graveyard.json", graveyard.build(con))
+    tree_index, tree_files = trees.build(con)
+    sizes["families/index.json"] = write_json(out / "families" / "index.json", tree_index)
+    for idx, tree in tree_files.items():
+        sizes[f"families/tree-{idx}.json"] = write_json(out / "families" / f"tree-{idx}.json", tree)
     sizes["meta.json"] = write_json(out / "meta.json", meta)
 
     for name, n in sizes.items():
-        log(f"wrote {name}: {n / 1024:,.0f} KB")
+        if not name.startswith("families/tree-"):
+            log(f"wrote {name}: {n / 1024:,.0f} KB")
+    trees_kb = sum(n for k, n in sizes.items() if k.startswith("families/tree-")) / 1024
+    log(f"wrote {len(tree_files)} family trees: {trees_kb:,.0f} KB")
     log(f"done in {time.time() - t0:,.0f}s")
 
 

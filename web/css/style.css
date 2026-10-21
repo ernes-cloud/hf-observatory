@@ -331,3 +331,9 @@ span.id { overflow-wrap: anywhere; display: inline-block; min-width: 160px; }
 .tree-scroll { max-height: 640px; overflow: auto; border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; }
 .graph-wrap .glabel { fill: var(--ink-2); font-size: 10px; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
 .graph-wrap .glabel.root { fill: var(--ink); font-size: 12px; font-weight: 600; }
+
+/* Narrow screens: card controls wrap under the title instead of pushing the page wider. */
+.card-head { flex-wrap: wrap; }
+.card-head > div:first-child { min-width: 0; flex: 1 1 200px; }
+.card-actions { flex-wrap: wrap; }
+.legend li { min-width: 0; overflow-wrap: anywhere; }

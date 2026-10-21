@@ -1,0 +1,84 @@
+name: Build data and deploy site
+
+on:
+  schedule:
+    # Daily, after the radar's 06:00 (Madrid) export has been released.
+    - cron: "23 7 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - name: Install pipeline dependencies
+        run: pip install -r pipeline/requirements.txt pytest
+
+      - name: Pipeline unit tests
+        run: python -m pytest -q pipeline/tests
+
+      # Slim snapshots of past releases are immutable: keep them between runs so
+      # each run only downloads the releases it has not seen yet.
+      - name: Restore snapshot cache
+        uses: actions/cache/restore@v4
+        with:
+          path: pipeline/.cache/snapshots
+          key: snapshots-${{ github.run_id }}
+          restore-keys: snapshots-
+
+      - name: Build site data
+        env:
+          SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: python pipeline/build.py --out web/data --cache pipeline/.cache
+
+      - name: Save snapshot cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: pipeline/.cache/snapshots
+          key: snapshots-${{ github.run_id }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Headless smoke test
+        run: |
+          npm install --no-save --no-package-lock playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node tests/smoke.mjs
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

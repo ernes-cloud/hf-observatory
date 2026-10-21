@@ -607,3 +607,5 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 8px 0 2p
 .fix-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
 .advice.flash { outline: 2px solid var(--accent); outline-offset: 2px; transition: outline-color 1s; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.fav-shared { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 0 16px 12px; background: var(--surface); }
+.fav-shared p { margin: 0 0 6px; overflow-wrap: anywhere; }

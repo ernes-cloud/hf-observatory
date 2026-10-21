@@ -46,6 +46,9 @@ jobs:
       - name: Advisor engine unit + fuzz tests (on the freshly built data)
         run: node --test tests/advisor-engine.test.mjs tests/advisor-calibration.test.mjs tests/advisor-fuzz.test.mjs
 
+      - name: Validate generated Docker Compose files with docker compose config
+        run: node tests/compose-validate.mjs --max 600
+
       - name: Headless smoke test
         run: |
           npx playwright install --with-deps chromium

@@ -120,6 +120,7 @@ Tests:
 python -m pytest pipeline/tests          # pipeline unit tests (tiny fixture, no network)
 npm test                                  # advisor engine unit tests + combinatorial fuzz over the real data
 node tests/advisor-ui.mjs                 # randomised clicks through the Advisor in headless Chromium
+node tests/compose-validate.mjs           # generated compose files through `docker compose config`
 npm install && npx playwright install chromium
 npm run test:e2e                          # headless check of every tab
 npm run screenshots                       # refresh docs/screenshots/
@@ -169,6 +170,14 @@ npm run screenshots                       # refresh docs/screenshots/
   per user and the total.
 * **Two kinds of card** (e.g. RTX 4090 + RTX 3090): llama.cpp / Ollama use all the memory and the layers take turns
   at each card's bandwidth; vLLM / SGLang tensor parallel counts every card as the smaller and slower one.
+* **Full stack compose**: every LLM card has a tab with one compose file holding the model server, Open WebUI
+  already connected to it, and an embedding model plus a reranker (Text Embeddings Inference) picked by the
+  advisor's RAG ranking for the same machine. TEI uses its CUDA build for the GPU generation when one exists and
+  the CPU build otherwise or next to vLLM / SGLang (which reserve the GPU memory); host ports never collide.
+* **Sharing a saved compose** puts it, compressed, in the link itself (`#advisor?…&fav=…`): no server stores it,
+  and whoever opens the link sees it and can save it to their own list.
+* Every generated compose file is checked in CI with Docker's own parser (`tests/compose-validate.mjs` runs
+  `docker compose config` on 600 of them across machines, runtimes and Customize settings).
 * Without config data, the advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
   ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size; for mixture-of-experts models with the
   geometric mean of active and total parameters, and scaled by the attention type read from the Hub

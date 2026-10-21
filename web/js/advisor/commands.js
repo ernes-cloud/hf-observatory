@@ -9,6 +9,7 @@ function ollamaRef(m, repo, quant) {
   if (official) return `gpt-oss:${official[1].toLowerCase()}`;
   return `hf.co/${repo}${quant ? `:${quant}` : ''}`;
 }
+const RUNTIME_NAMES = { vllm: 'vLLM', sglang: 'SGLang', llamacpp: 'llama.cpp', ollama: 'Ollama', lmstudio: 'LM Studio', mlx: 'MLX', transformers: 'Transformers' };
 const search = (q) => `https://huggingface.co/models?search=${encodeURIComponent(q)}`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -33,6 +34,8 @@ export function defaultOptions(r, s, b) {
     imageTag: 'latest',
     restart: true,
     healthcheck: true,
+    stackUi: true,
+    stackRag: true,
   };
 }
 export const defaultSpecTokens = (method) => (method?.startsWith('dflash') ? 8 : method === 'dspark' ? 7 : 3);
@@ -244,6 +247,100 @@ function llamacppCompose(r, b, o, repo, quant) {
   ].join('\n');
 }
 
+/* ------------------------------------------------------------------ full stack */
+
+const TEI = '1.8';
+/**
+ * Text Embeddings Inference image for this machine. TEI publishes one CUDA build per GPU generation;
+ * where none matches (Blackwell, AMD, Intel, ARM, Macs) the CPU build is used: embedding and reranking
+ * models are small enough for it.
+ */
+export function teiImage(b, shared = false) {
+  // `shared`: vLLM / SGLang reserve most of the GPU memory up front, so TEI next to them runs on the CPU
+  const gpu = !shared && b.vendor === 'nvidia' && b.kind !== 'cpu' && b.kind !== 'mac' && !b.arm;
+  const tag = !gpu ? `cpu-${TEI}` : b.arch === 'turing' ? `turing-${TEI}` : b.arch === 'ampere' ? (/A100/.test(b.label) ? TEI : `86-${TEI}`)
+    : b.arch === 'ada' ? `89-${TEI}` : b.arch === 'hopper' ? `hopper-${TEI}` : `cpu-${TEI}`;
+  return { image: `ghcr.io/huggingface/text-embeddings-inference:${tag}`, gpu: !tag.startsWith('cpu') };
+}
+
+/** Split a generated compose file into its parts so several can be merged into one. */
+function splitCompose(text) {
+  const parts = { head: [], services: [], volumes: [], tail: [] };
+  let sec = 'head';
+  for (const l of text.split('\n')) {
+    if (l === 'services:') { sec = 'services'; continue; }
+    if (l === 'volumes:') { sec = 'volumes'; continue; }
+    if (sec !== 'head' && (l === '' || /^\S/.test(l))) sec = 'tail';
+    if (l !== '' || sec === 'head') parts[sec].push(l);
+  }
+  return parts;
+}
+
+/**
+ * One compose file with the model server, Open WebUI wired to it, and (optionally) an embedding model
+ * and a reranker for retrieval. `base` is the model server's compose (null when it runs natively, e.g.
+ * on a Mac, and Open WebUI then talks to the host).
+ */
+function stackCompose(r, b, o, base, stack) {
+  const parts = base ? splitCompose(base.text) : { head: [], services: [], volumes: [], tail: [] };
+  const services = [...parts.services];
+  const volumes = new Set(parts.volumes.map((l) => l.trim()).filter(Boolean));
+  const env = [];
+  if (base?.kind === 'ollama' || (!base && ['ollama', 'any'].includes(r.rtHost))) {
+    env.push(`OLLAMA_BASE_URL=${base ? 'http://ollama:11434' : 'http://host.docker.internal:11434'}`);
+  } else {
+    const url = base ? base.url : `http://host.docker.internal:${r.rtHost === 'lmstudio' ? 1234 : 8080}/v1`;
+    env.push(`OPENAI_API_BASE_URL=${url}`, `OPENAI_API_KEY=${o.apiKey && base?.keyVar ? `\${${base.keyVar}}` : 'none'}`, 'ENABLE_OLLAMA_API=false');
+  }
+  env.push('WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-change-me}');
+  const tei = teiImage(b, ['vllm', 'sglang'].includes(base?.kind));
+  // host ports already taken by the model server: give the other services free ones
+  const used = new Set(parts.services.map((l) => /^\s+- "(\d+):/.exec(l)?.[1]).filter(Boolean).map(Number));
+  const free = (p) => { while (used.has(p)) p++; used.add(p); return p; };
+  const uiPort = free(3000);
+  const embedPort = free(8081);
+  const rerankPort = free(embedPort + 1);
+  const rag = o.stackRag && stack?.embed;
+  if (rag) {
+    env.push('RAG_EMBEDDING_ENGINE=openai', 'RAG_OPENAI_API_BASE_URL=http://embeddings:80/v1', 'RAG_OPENAI_API_KEY=none', `RAG_EMBEDDING_MODEL=${stack.embed}`);
+  }
+  const teiService = (name, model, port) => [
+    `  ${name}:`,
+    `    image: ${tei.image}`,
+    '    ports:',
+    `      - "${port}:80"`,
+    '    volumes:',
+    '      - ~/.cache/huggingface:/data',
+    ...(tei.gpu ? gpuBlock(b).map((l) => l) : []),
+    ...restartBlock(o),
+    ...commandBlock([`--model-id ${model}`]),
+  ];
+  if (o.stackUi) {
+    services.push(
+      '  open-webui:',
+      '    image: ghcr.io/open-webui/open-webui:main',
+      '    ports:',
+      `      - "${uiPort}:8080"`,
+      '    volumes:',
+      '      - open-webui:/app/backend/data',
+      ...envBlock(env),
+      ...(base ? [] : ['    extra_hosts:', '      - "host.docker.internal:host-gateway"']),
+      ...((base || rag) ? ['    depends_on:', ...(base ? [`      - ${base.kind}`] : []), ...(rag ? ['      - embeddings'] : [])] : []),
+      ...restartBlock(o),
+    );
+    volumes.add('open-webui: {}');
+  }
+  if (rag) services.push(...teiService('embeddings', stack.embed, embedPort));
+  if (o.stackRag && stack?.rerank) services.push(...teiService('reranker', stack.rerank, rerankPort));
+  const notes = [
+    ...parts.head,
+    '# Put a .env file next to this one with WEBUI_SECRET_KEY=<any long random string>' + (r.m.gated ? ' and HF_TOKEN=<your token>' : '') + '.',
+    ...(rag && b.arm ? ['# ARM64: if text-embeddings-inference has no arm64 image for your version, turn RAG off in Customize.'] : []),
+    ...(o.stackUi || rag ? [`# ${[o.stackUi && `Chat UI: http://localhost:${uiPort}`, rag && `embeddings: http://localhost:${embedPort}/v1/embeddings`, o.stackRag && stack?.rerank && `reranker: http://localhost:${rerankPort}/rerank`].filter(Boolean).join(' · ')}`] : []),
+  ];
+  return [...notes, 'services:', ...services, ...(volumes.size ? ['volumes:', ...[...volumes].map((v) => `  ${v}`)] : []), ...(parts.tail.length ? ['', ...parts.tail] : [])].join('\n');
+}
+
 /* ------------------------------------------------------------------ entry point */
 
 /**
@@ -251,7 +348,7 @@ function llamacppCompose(r, b, o, repo, quant) {
  * `opts` are the per-model options (defaultOptions + the user's changes); `specs` the speculative
  * options available for the runtime that will run it.
  */
-export function commandsFor(r, s, b, caps, opts, specs = []) {
+export function commandsFor(r, s, b, caps, opts, specs = [], stack = null) {
   const { m, fit, kind } = r;
   const o = { ...defaultOptions(r, s, b), ...(opts || {}) };
   o.specObj = o.spec === 'off' ? null : specs.find((x) => x.method === o.spec) || null;
@@ -263,7 +360,8 @@ export function commandsFor(r, s, b, caps, opts, specs = []) {
       out.push({ label: 'Python', code: isRerank
         ? `pip install sentence-transformers\npython -c "from sentence_transformers import CrossEncoder as C; print(C('${m.id}').predict([('query', 'passage')]))"`
         : `pip install sentence-transformers\npython -c "from sentence_transformers import SentenceTransformer as S; print(S('${m.id}').encode(['hello world']).shape)"` });
-      out.push({ label: 'Docker Compose (TEI)', yaml: true, code: ['services:', '  tei:', `    image: ghcr.io/huggingface/text-embeddings-inference:${b.kind === 'cpu' || b.kind === 'mac' ? 'cpu-latest' : 'latest'}`, '    ports:', '      - "8080:80"', ...hfCache('/data'), ...gpuBlock(b), ...restartBlock(o), ...commandBlock([`--model-id ${m.id}`])].join('\n'), note: 'Text Embeddings Inference serves embeddings and rerankers over HTTP.' });
+      const tei = teiImage(b);
+      out.push({ label: 'Docker Compose (TEI)', yaml: true, code: ['services:', '  tei:', `    image: ${tei.image}`, '    ports:', '      - "8080:80"', ...hfCache('/data'), ...(tei.gpu ? gpuBlock(b) : []), ...restartBlock(o), ...commandBlock([`--model-id ${m.id}`])].join('\n'), note: `Text Embeddings Inference serves embeddings and rerankers over HTTP${tei.gpu ? '' : ' (CPU build: small embedding models run fine on it)'}.` });
     } else if (s.use === 'asr') {
       out.push({ label: 'Python', code: `pip install transformers torch\npython -c "from transformers import pipeline; print(pipeline('automatic-speech-recognition', model='${m.id}')('audio.mp3'))"` });
       if (/whisper/i.test(m.id)) out.push({ label: 'whisper.cpp', note: 'Whisper models also run very fast with whisper.cpp or faster-whisper.' });
@@ -317,6 +415,18 @@ export function commandsFor(r, s, b, caps, opts, specs = []) {
     transformers: ['transformers', 'vllm', 'sglang', 'ollama', 'llamacpp'],
   };
   const primary = s.runtime !== 'any' ? s.runtime : kind === 'mlx' ? 'mlx' : kind === 'st' ? 'vllm' : 'ollama';
+  // Full stack: the model server plus Open WebUI (and retrieval models), in one compose file.
+  if ((o.stackUi || o.stackRag) && !isCluster(b)) {
+    const server = { vllm: ['vllm', 'vllm', o.port || 8000, 'VLLM_API_KEY'], sglang: ['sglang', 'sglang', o.port || 30000, 'SGLANG_API_KEY'],
+      llamacpp: ['llamacppDocker', 'llama', o.port || 8080, 'LLAMA_API_KEY'], ollama: ['ollamaDocker', 'ollama', 11434, null] }[primary] || (tabs.ollamaDocker && b.kind !== 'mac' ? ['ollamaDocker', 'ollama', 11434, null] : null);
+    const base = server && tabs[server[0]]?.code && b.kind !== 'mac' ? { text: tabs[server[0]].code, kind: server[1], url: `http://${server[1]}:${server[2]}/v1`, keyVar: server[3] } : null;
+    if (base || b.kind === 'mac') {
+      tabs.stack = { label: 'Full stack: Open WebUI + RAG (Docker Compose)', yaml: true, code: stackCompose({ ...r, rtHost: primary }, b, o, base, stack),
+        note: `${base ? `The model server from the ${esc(primary === 'any' ? 'Ollama' : RUNTIME_NAMES[primary] || primary)} tab` : 'Your native model server (Docker on a Mac cannot use the GPU)'}${o.stackUi ? ', <a href="https://docs.openwebui.com" rel="noopener">Open WebUI</a> already connected to it' : ''}${o.stackRag && stack?.embed ? `, and <a href="https://huggingface.co/${esc(stack.embed)}" rel="noopener">${esc(stack.embed)}</a> for document search${stack.rerank ? ` plus <a href="https://huggingface.co/${esc(stack.rerank)}" rel="noopener">${esc(stack.rerank)}</a> to rerank` : ''} (picked for your machine by the RAG part of the advisor)` : ''}. Turn parts on or off in Customize.` };
+      const after = { vllm: 'vllm', sglang: 'sglang', llamacpp: 'llamacppDocker', ollama: 'ollamaDocker', lmstudio: 'lmstudio', mlx: 'mlx', transformers: 'transformers' }[primary] || 'ollamaDocker';
+      for (const list of Object.values(order)) { const i = list.indexOf(after); if (i >= 0 && !list.includes('stack')) list.splice(i + 1, 0, 'stack'); }
+    }
+  }
   for (const k of order[primary] || order.ollama) if (tabs[k] && (tabs[k].code || out.length === 0)) out.push(tabs[k]);
   return out;
 }

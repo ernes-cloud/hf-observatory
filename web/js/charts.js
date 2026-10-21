@@ -288,3 +288,38 @@ export function sparkline(values, { label = '' } = {}) {
   const dir = last > first * 1.02 ? 'up' : last < first * 0.98 ? 'down' : 'flat';
   return `<svg class="spark ${dir}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label || `Trend from ${compact(first)} to ${compact(last)}`)}"><path d="${d}"/><circle cx="${x(li)}" cy="${y(vals[li])}" r="3"/></svg>`;
 }
+
+/* ---------- stacked horizontal bar list (part-to-whole per row) ---------- */
+/**
+ * items: [{label, parts: number[], href?, key?}], series: [{label, color}]
+ * Rows can be made clickable with onSelect(item).
+ */
+export function stackedBarList(items, series, { fmt = int, onSelect } = {}) {
+  const wrap = document.createElement('div');
+  const max = Math.max(1, ...items.map((d) => d.parts.reduce((a, b) => a + b, 0)));
+  const ul = document.createElement('ul');
+  ul.className = 'bars';
+  ul.innerHTML = items.map((d, i) => {
+    const total = d.parts.reduce((a, b) => a + b, 0);
+    const segs = d.parts.map((v, k) => (v > 0 ? `<span class="seg" data-k="${k}" style="flex:${v} 0 0;background:${series[k].color}"></span>` : '')).join('');
+    const label = onSelect
+      ? `<button type="button" class="link-btn" data-i="${i}">${esc(d.label)}</button>`
+      : d.href ? `<a href="${esc(d.href)}" rel="noopener">${esc(d.label)}</a>` : esc(d.label);
+    return `<li class="bar-row" data-i="${i}">
+      <span class="bar-label" title="${esc(d.label)}">${label}</span>
+      <span class="bar-track"><span class="stack" style="width:calc((100% - 4.5em) * ${(total / max).toFixed(4)})">${segs}</span><span class="bar-value">${esc(fmt(total))}</span></span>
+    </li>`;
+  }).join('');
+  ul.querySelectorAll('.bar-row').forEach((row) => {
+    const d = items[+row.dataset.i];
+    row.addEventListener('mousemove', (e) => {
+      const rowsHtml = series.map((s, k) => (d.parts[k] ? `<div class="row"><span><span class="swatch" style="background:${s.color}"></span> ${esc(s.label)}</span><span>${fmt(d.parts[k])}</span></div>` : '')).join('');
+      showTip(`<strong>${esc(d.label)}</strong>${rowsHtml}`, e.clientX, e.clientY);
+    });
+    row.addEventListener('mouseleave', hideTip);
+  });
+  if (onSelect) ul.querySelectorAll('.link-btn').forEach((b) => b.addEventListener('click', () => onSelect(items[+b.dataset.i])));
+  wrap.append(ul);
+  wrap.insertAdjacentHTML('beforeend', `<ul class="legend">${series.map((s) => `<li><span class="swatch" style="background:${s.color}"></span>${esc(s.label)}</li>`).join('')}</ul>`);
+  return wrap;
+}

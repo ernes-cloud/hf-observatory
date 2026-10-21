@@ -7,10 +7,12 @@ import { dateTime, esc } from './format.js';
 const VIEWS = {
   overview: './views/overview.js',
   finder: './views/finder.js',
+  families: './views/families.js',
+  graveyard: './views/graveyard.js',
   about: './views/about.js',
 };
 const TITLES = {
-  overview: 'Overview', finder: 'Model finder', about: 'About the data',
+  overview: 'Overview', finder: 'Model finder', families: 'Family trees', graveyard: 'Graveyard', about: 'About the data',
 };
 
 const rendered = new Map(); // view → module (rendered once, then `update` on param change)

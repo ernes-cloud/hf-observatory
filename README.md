@@ -12,7 +12,7 @@ It is built entirely on the open dataset
 | Section | What it shows |
 |---|---|
 | **Home** | What the site is for in plain words, today's key numbers, “What do you want to do?” shortcuts to each section, this week's summary and the key terms. |
-| **Model advisor** | “What should I run on my hardware?” Pick a use (chat, coding, agents & tool calling, reasoning, vision, RAG/embeddings, speech, image generation, creative writing), your GPU(s) and how many, or your Mac's unified memory, or CPU + RAM (with optional overflow into system RAM for Ollama), the runtime (Ollama, LM Studio, llama.cpp, MLX, vLLM, Transformers), the context length and a size range. It ranks models that fit, picks the best quantization for each, estimates memory including the KV cache, and gives the command to run it (`ollama run hf.co/…:Q4_K_M`, `mlx_lm.chat`, `vllm serve`…). |
+| **Model advisor** | “What should I run on my hardware?” Pick the job (chat, coding, reasoning, vision, RAG embeddings/rerankers, speech, image generation, writing) or the **kind of agent** (coding agent, browser/computer use, function calling, MCP assistant, research agent, data/SQL). Pick your hardware: ~70 GPUs with VRAM and bandwidth (consumer, laptop, workstation, data centre, AMD, Intel) × number of cards, **NVIDIA DGX Spark** (1 or 2 linked), DGX Station, Jetson Thor/Orin, AMD Ryzen AI Max+ 395, Apple Silicon by chip and memory, or CPU + RAM type, with optional RAM overflow. Then set runtime, KV-cache precision, context, concurrent users, a **dual-handle size range slider** and a quality ↔ speed slider. You get ranked models that fit, with the best quantization for your speed target, memory (weights + context), **estimated tokens/s** from memory bandwidth (MoE-aware), download size, why each was picked, agent frameworks and tool-call settings, ready-to-copy commands for Ollama, llama.cpp, LM Studio, MLX, vLLM and SGLang, a side-by-side comparison of up to 3 models, and a shareable link. |
 | **Overview** | Totals (live, removed, gated, % open license), top publishers by model count and by 30-day downloads, tasks, licenses, sizes, formats, languages, families and models created per week. |
 | **Model finder** | “Which model fits my needs?” Filter by text, task, language, commercial-use license, hardware budget (“fits in 16 GB”), format (GGUF, MLX, ONNX…), hide gated models; sort by downloads, likes, trending, newest or size. Each result has a short English model card and a link to the Hub. Filters are kept in the URL, so searches can be shared. |
 | **Trends** | Download evolution across past releases (7/14/30-day windows): rising, fading, breakout and newcomer models with sparklines, publishers gaining or losing ground, adoption by family (Qwen, Llama, Mistral, Gemma…) as share of downloads or model count, and what is trending now. |
@@ -118,6 +118,7 @@ Tests:
 
 ```bash
 python -m pytest pipeline/tests          # pipeline unit tests (tiny fixture, no network)
+npm test                                  # advisor engine unit tests (memory, speed, ranking)
 npm install && npx playwright install chromium
 npm run test:e2e                          # headless check of every tab
 npm run screenshots                       # refresh docs/screenshots/

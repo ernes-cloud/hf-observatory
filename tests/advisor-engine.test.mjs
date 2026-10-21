@@ -236,3 +236,55 @@ test('speech and image commands follow the library the model is built for', asyn
   const other = commandsFor(r('pyannote-audio'), s, b, ['chat'], null)[0];
   assert.ok(!other.code && /pyannote-audio/.test(other.note));
 });
+
+test('sprint 1: generated commands use flags and images that exist', async () => {
+  const { budgetOf } = await import('../web/js/advisor/engine.js');
+  const { commandsFor, defaultOptions, teiImage } = await import('../web/js/advisor/commands.js');
+  const caps = ['chat', 'tools'];
+  const run = (m, s, opts = {}, specs = [], stack = null) => {
+    const b = budgetOf(s);
+    const r = { m: { caps: 3, lang: [], ...m }, fit: { quant: 'BF16', repo: m.id, where: 'gpu', tps: 30, bpp: 2, need: { total: 10, weights: 8, kv: 1 } }, kind: 'st', rt: s.runtime, specs, ctx: s.ctx };
+    return commandsFor(r, s, b, caps, { ...defaultOptions(r, s, b), tools: true, ...opts }, specs, stack);
+  };
+  const vllm = { ...base, use: 'agents', runtime: 'vllm', gpu: 'rtx-5090' };
+  const code = (tabs, label) => tabs.find((t) => t.label.startsWith(label))?.code || '';
+  // no parser known: no tool flags (and never a placeholder that breaks the command)
+  const gemma3 = run({ id: 'google/gemma-3-27b-it', p: 27, fam: 'Gemma', st: true }, vllm);
+  assert.doesNotMatch(code(gemma3, 'vLLM (Docker'), /tool-call-parser|</);
+  assert.match(code(run({ id: 'google/gemma-4-31B-it', p: 31, fam: 'Gemma', st: true }, vllm), 'vLLM (Docker'), /--tool-call-parser gemma4/);
+  // SGLang parser names differ from vLLM's
+  const sg = { ...vllm, runtime: 'sglang' };
+  assert.match(code(run({ id: 'Qwen/Qwen3.6-27B', p: 27, fam: 'Qwen', st: true }, sg), 'SGLang'), /--tool-call-parser qwen3_coder/);
+  assert.match(code(run({ id: 'deepseek-ai/DeepSeek-V3.2', p: 671, a: 37, fam: 'DeepSeek', st: true }, { ...sg, gpu: 'h200', ngpu: 8 }), 'SGLang'), /--tool-call-parser deepseekv3/);
+  assert.match(code(run({ id: 'Qwen/Qwen3.6-27B', p: 27, fam: 'Qwen', st: true }, sg), 'SGLang'), /--tp-size|--model-path/);
+  // AMD: vLLM ROCm image with the vllm serve entrypoint; SGLang ROCm tag
+  const amd = { ...vllm, gpu: 'instinct-mi300x' };
+  assert.match(code(run({ id: 'Qwen/Qwen3.6-27B', p: 27, fam: 'Qwen', st: true }, amd), 'vLLM (Docker'), /image: vllm\/vllm-openai-rocm:/);
+  assert.match(code(run({ id: 'Qwen/Qwen3.6-27B', p: 27, fam: 'Qwen', st: true }, { ...amd, runtime: 'sglang' }), 'SGLang'), /image: lmsysorg\/sglang:v[\d.]+-rocm\d+-mi30x/);
+  // DGX Spark: multi-arch CUDA 13 SGLang image; two units with vLLM's own multi-node mode, no Ray
+  assert.match(code(run({ id: 'Qwen/Qwen3.6-27B', p: 27, fam: 'Qwen', st: true }, { ...vllm, gpu: 'dgx-spark', runtime: 'sglang' }), 'SGLang'), /lmsysorg\/sglang:latest-cu130/);
+  const two = code(run({ id: 'Qwen/Qwen3.6-27B', p: 27, fam: 'Qwen', st: true }, { ...vllm, gpu: 'dgx-spark', ngpu: 2 }), 'vLLM (Docker');
+  assert.match(two, /--nnodes 2 --node-rank \$\{NODE_RANK:-0\} --master-addr \$\{HEAD_IP\}/);
+  assert.doesNotMatch(two, /ray/i);
+  // TEI images per GPU generation and architecture
+  const tei = (s) => teiImage(budgetOf({ ...base, ...s })).image.split(':')[1];
+  assert.equal(tei({ gpu: 'rtx-5090' }), '120-1.9');
+  assert.equal(tei({ gpu: 'rtx-4090' }), '89-1.9');
+  assert.equal(tei({ gpu: 'dgx-spark' }), '121-1.9');
+  assert.equal(tei({ gpu: 'b200' }), '100-1.9');
+  assert.equal(tei({ hw: 'mac', chip: 'm4-max', mac: 64 }), 'cpu-arm64-1.9');
+  assert.equal(tei({ gpu: 'radeon-rx-7900-xtx' }), 'cpu-1.9');
+  // full stack: Open WebUI reranks itself (TEI's /rerank speaks another API)
+  const stack = code(run({ id: 'Qwen/Qwen3.6-27B', p: 27, fam: 'Qwen', st: true }, vllm, {}, [], { embed: 'BAAI/bge-m3', rerank: 'BAAI/bge-reranker-v2-m3' }), 'Full stack');
+  assert.match(stack, /RAG_RERANKING_MODEL=BAAI\/bge-reranker-v2-m3/);
+  assert.doesNotMatch(stack, /^ {2}reranker:/m);
+  // gpt-oss effort in SGLang
+  assert.match(code(run({ id: 'openai/gpt-oss-120b', p: 117, a: 5.1, fam: 'GPT-OSS', st: true, q: { mxfp4: 'openai/gpt-oss-120b' } }, { ...sg, gpu: 'h100-sxm' }, { think: 'high' }), 'SGLang'), /reasoning_effort": "high"/);
+  // llama.cpp: downloads land in the Hugging Face cache; Intel cards get their render device; LM Studio by URL
+  const ll = { ...base, use: 'chat', runtime: 'llamacpp', gpu: 'arc-b580' };
+  const llr = { m: { id: 'Qwen/Qwen3.5-9B', p: 9.6, fam: 'Qwen', gguf: 'unsloth/Qwen3.5-9B-GGUF', caps: 1, lang: [] }, fit: { quant: 'Q4_K_M', where: 'gpu', tps: 30, bpp: 0.6, need: { total: 7, weights: 6, kv: 0.5 } }, kind: 'gguf', rt: 'llamacpp', specs: [], ctx: 8192 };
+  const lt = commandsFor(llr, ll, budgetOf(ll), caps, null, []);
+  assert.match(code(lt, 'llama.cpp (Docker'), /~\/\.cache\/huggingface:\/root\/\.cache\/huggingface/);
+  assert.match(code(lt, 'llama.cpp (Docker'), /devices:\n {6}- \/dev\/dri/);
+  assert.equal(code(lt, 'LM Studio'), 'lms get https://huggingface.co/unsloth/Qwen3.5-9B-GGUF@Q4_K_M');
+});

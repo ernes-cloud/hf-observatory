@@ -52,7 +52,7 @@ function randomOpts(r, o) {
 }
 
 const STACK = { embed: 'BAAI/bge-m3', rerank: 'BAAI/bge-reranker-v2-m3' };
-const BAD_TEXT = /\bundefined\b|\bNaN\b|\[object |\bInfinity\b|: null\b|=null\b|\bnull\b(?!\))/;
+const BAD_TEXT = /<see |\bundefined\b|\bNaN\b|\[object |\bInfinity\b|: null\b|=null\b|\bnull\b(?!\))/;
 
 function checkCommands(tabs, where) {
   assert.ok(tabs.length > 0, `${where}: no run instructions`);

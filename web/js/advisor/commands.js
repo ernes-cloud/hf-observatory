@@ -1,7 +1,7 @@
 // Ready-to-run commands and Docker Compose files for a recommendation.
 // `o` holds the per-model options from the "Customize" panel (see defaultOptions).
 
-import { LLM_USES, QUANTS, isCluster, isGptOss, parallelOf, thinkingOf, toolParser } from './engine.js';
+import { LLM_USES, QUANTS, isCluster, isGptOss, parallelOf, sglangToolParser, thinkingOf, toolParser } from './engine.js';
 
 /** What `ollama run` takes: the official library tag for gpt-oss, else the Hugging Face GGUF (with its quant). */
 function ollamaRef(m, repo, quant) {
@@ -44,7 +44,8 @@ export const defaultSpecTokens = (method) => (method?.startsWith('dflash') ? 8 :
 
 function gpuBlock(b) {
   if (b.vendor === 'amd') return ['    devices:', '      - /dev/kfd', '      - /dev/dri', '    group_add:', '      - video'];
-  if (b.kind === 'mac' || b.kind === 'cpu' || b.vendor === 'intel') return [];
+  if (b.vendor === 'intel') return ['    devices:', '      - /dev/dri'];
+  if (b.kind === 'mac' || b.kind === 'cpu') return [];
   return ['    deploy:', '      resources:', '        reservations:', '          devices:', '            - driver: nvidia', '              count: all', '              capabilities: [gpu]'];
 }
 const hfCache = (path = '/root/.cache/huggingface') => ['    volumes:', `      - ~/.cache/huggingface:${path}`];
@@ -68,7 +69,8 @@ function vllmArgs(r, b, o, repo) {
     const { tp, pp } = isCluster(b) ? { tp: b.n, pp: 1 } : parallelOf(b.n);
     if (tp > 1) args.push(`--tensor-parallel-size ${tp}`);
     if (pp > 1) args.push(`--pipeline-parallel-size ${pp}`);
-    if (isCluster(b)) args.push('--distributed-executor-backend ray');
+    // Two linked machines: vLLM's own multi-node mode (no Ray); the second node runs headless
+    if (isCluster(b)) args.push(`--nnodes ${b.n} --node-rank \${NODE_RANK:-0} --master-addr \${HEAD_IP} \${VLLM_WORKER_FLAGS:-}`);
   }
   if (o.expertParallel && b.n > 1) args.push('--enable-expert-parallel');
   if (fit.onTheFly) args.push('--quantization fp8');
@@ -86,7 +88,8 @@ function vllmArgs(r, b, o, repo) {
   }
   if (think && o.reasoningParser && think.vllmParser) args.push(`--reasoning-parser ${think.vllmParser}`);
   if (think?.mode === 'hybrid' && o.think === 'off') args.push(`--default-chat-template-kwargs '{"enable_thinking": false}'`);
-  if (o.tools) args.push(`--enable-auto-tool-choice --tool-call-parser ${toolParser(m) || '<see model card>'}`);
+  // without a known parser vLLM would refuse to start: leave tool calling to the model card
+  if (o.tools && toolParser(m)) args.push(`--enable-auto-tool-choice --tool-call-parser ${toolParser(m)}`);
   return args;
 }
 
@@ -98,10 +101,11 @@ function vllmCompose(r, b, o, repo) {
   const env = [...gatedEnv(r.m), ...(o.apiKey ? ['VLLM_API_KEY=${VLLM_API_KEY}   # put it in a .env file next to this compose'] : [])];
   return [
     ...armNote(b),
-    ...clusterNote(b, 'start a Ray cluster across them (ray start --head on this one, ray start --address=<head-ip>:6379 on the other), then run this on the head.'),
+    ...clusterNote(b, 'run this file on both. In a .env file next to it: HEAD_IP=<first unit\'s IP> on both, NODE_RANK=1 and VLLM_WORKER_FLAGS=--headless on the second.'),
     'services:',
     '  vllm:',
-    `    image: ${b.vendor === 'amd' ? 'rocm/vllm' : 'vllm/vllm-openai'}:${o.imageTag}`,
+    // the ROCm image with the same `vllm serve` entrypoint as the CUDA one
+    `    image: ${b.vendor === 'amd' ? 'vllm/vllm-openai-rocm' : 'vllm/vllm-openai'}:${o.imageTag}`,
     '    ipc: host',
     // linked units talk over the host network (NCCL / Ray), so the API port is the host's
     ...(isCluster(b) ? ['    network_mode: host'] : ['    ports:', `      - "${o.port || 8000}:${o.port || 8000}"`]),
@@ -122,7 +126,7 @@ function sglangArgs(r, b, o, repo) {
   const args = ['python3 -m sglang.launch_server', `--model-path ${repo}`, `--context-length ${o.ctx}`, `--host 0.0.0.0 --port ${o.port || 30000}`];
   if (b.n > 1) {
     const { tp, pp } = isCluster(b) ? { tp: b.n, pp: 1 } : parallelOf(b.n);
-    if (tp > 1) args.push(`--tp ${tp}`);
+    if (tp > 1) args.push(`--tp-size ${tp}`);
     if (pp > 1) args.push(`--pp-size ${pp}`);
     if (isCluster(b)) args.push(`--nnodes ${b.n} --node-rank \${NODE_RANK:-0} --dist-init-addr \${HEAD_IP}:20000`);
   }
@@ -136,13 +140,25 @@ function sglangArgs(r, b, o, repo) {
   const sp = o.specObj;
   if (sp) {
     if (sp.method === 'mtp') args.push(`--speculative-algorithm NEXTN --speculative-num-steps ${o.specTokens} --speculative-eagle-topk 1 --speculative-num-draft-tokens ${o.specTokens + 1}`);
-    else if (sp.method.startsWith('dflash')) args.push(`--speculative-algorithm DFLASH --speculative-draft-model-path ${sp.draft} --trust-remote-code`);
+    else if (sp.method.startsWith('dflash')) args.push(`--speculative-algorithm DFLASH --speculative-draft-model-path ${sp.draft} --speculative-dflash-block-size ${o.specTokens} --trust-remote-code`);
     else if (sp.method === 'dspark') args.push(`--speculative-algorithm DSPARK --speculative-draft-model-path ${sp.draft} --speculative-dspark-block-size ${o.specTokens} --trust-remote-code`);
     else args.push(`--speculative-algorithm EAGLE3 --speculative-draft-model-path ${sp.draft} --speculative-num-steps ${o.specTokens} --speculative-eagle-topk 1 --speculative-num-draft-tokens ${o.specTokens + 1}`);
   }
   if (think && o.reasoningParser && think.sglangParser) args.push(`--reasoning-parser ${think.sglangParser}`);
-  if (o.tools && toolParser(m)) args.push(`--tool-call-parser ${toolParser(m).replace('llama3_json', 'llama3').replace(/^openai$/, 'gpt-oss')}`);
+  if (think?.mode === 'hybrid' && o.think === 'off') args.push(`--default-chat-template-kwargs '{"enable_thinking": false}'`);
+  if (think?.mode === 'effort') args.push(`--default-chat-template-kwargs '{"reasoning_effort": "${o.think}"}'`);
+  if (o.tools && sglangToolParser(m)) args.push(`--tool-call-parser ${sglangToolParser(m)}`);
   return args;
+}
+
+/**
+ * SGLang image tag. The CUDA 13 build is multi-arch (amd64 + arm64) and covers Blackwell, including the
+ * DGX Spark; AMD Instinct cards need a ROCm tag (there is no floating "latest" ROCm tag).
+ */
+function sglangTag(b, o) {
+  if (o.imageTag !== 'latest') return o.imageTag;
+  if (b.vendor === 'amd') return /MI35/.test(b.label) ? 'v0.5.22-rocm720-mi35x' : 'v0.5.22-rocm720-mi30x';
+  return b.arch === 'blackwell' || b.arm ? 'latest-cu130' : 'latest';
 }
 
 function sglangCompose(r, b, o, repo) {
@@ -150,11 +166,10 @@ function sglangCompose(r, b, o, repo) {
   return [
     ...(b.id === 'dgx-spark' ? [] : armNote(b)),
     ...clusterNote(b, 'run this file on both, with HEAD_IP=<first unit\'s IP> and NODE_RANK=0 on the first, NODE_RANK=1 on the second (in a .env file).'),
-    ...(b.vendor === 'amd' ? ['# AMD: use a ROCm tag of lmsysorg/sglang'] : []),
+    ...(b.vendor === 'amd' ? ['# AMD Instinct: ROCm build of SGLang (pick the newest vX.Y.Z-rocm…-mi30x / -mi35x tag).'] : []),
     'services:',
     '  sglang:',
-    // LMSYS publishes an ARM64 + Blackwell (sm_121) build for the DGX Spark under the "spark" tag
-    `    image: lmsysorg/sglang:${b.id === 'dgx-spark' && o.imageTag === 'latest' ? 'spark' : o.imageTag}`,
+    `    image: lmsysorg/sglang:${sglangTag(b, o)}`,
     '    ipc: host',
     '    shm_size: 32g',
     // linked units talk over the host network (NCCL / Ray), so the API port is the host's
@@ -219,7 +234,11 @@ function llamacppArgs(r, o, repo, quant) {
   if (r.fit.where === 'moe-cpu') args.push(r.fit.cpuMoe ? `--n-cpu-moe ${r.fit.cpuMoe}` : '--cpu-moe');
   if (o.users > 1 && sp?.method !== 'mtp') args.push(`-np ${o.users}`);
   if (sp?.method === 'mtp') args.push('--spec-type draft-mtp');
-  if (sp?.method === 'dflash2') args.push(`-hfd ${sp.draft} --spec-draft-n-max ${o.specTokens}`);
+  if (sp?.draft) {
+    // DFlash and DFlash2 share one type (llama.cpp reads which from the draft GGUF); draft tokens are capped at its block size
+    const type = { dflash2: 'draft-dflash', dflash: 'draft-dflash', dspark: 'draft-dspark', eagle3: 'draft-eagle3' }[sp.method];
+    args.push(`-hfd ${sp.draft} --spec-type ${type} --spec-draft-n-max ${o.specTokens}`);
+  }
   if (o.tools || think) args.push('--jinja');
   if (think?.mode === 'hybrid' && o.think === 'off') args.push('--reasoning-budget 0');
   if (think?.mode === 'effort') args.push(`--chat-template-kwargs '{"reasoning_effort": "${o.think}"}'`);
@@ -238,7 +257,7 @@ function llamacppCompose(r, b, o, repo, quant) {
     '    ports:',
     `      - "${o.port || 8080}:${o.port || 8080}"`,
     '    volumes:',
-    '      - ~/.cache/llama.cpp:/root/.cache/llama.cpp',
+    '      - ~/.cache/huggingface:/root/.cache/huggingface', // where -hf downloads
     ...envBlock(o.apiKey ? ['LLAMA_API_KEY=${LLAMA_API_KEY}   # put it in a .env file next to this compose'] : []),
     ...gpuBlock(b),
     ...restartBlock(o),
@@ -249,17 +268,27 @@ function llamacppCompose(r, b, o, repo, quant) {
 
 /* ------------------------------------------------------------------ full stack */
 
-const TEI = '1.8';
+const TEI = '1.9';
 /**
- * Text Embeddings Inference image for this machine. TEI publishes one CUDA build per GPU generation;
- * where none matches (Blackwell, AMD, Intel, ARM, Macs) the CPU build is used: embedding and reranking
- * models are small enough for it.
+ * Text Embeddings Inference image for this machine. TEI publishes one CUDA build per GPU generation
+ * (1.9 adds Blackwell: 120 for RTX 50 / RTX PRO, 100 for B200, 121 for the DGX Spark's GB10) and CPU
+ * builds for amd64 and arm64; where no CUDA build matches (AMD, Intel, Jetson, B300) the CPU build runs
+ * the small embedding models fine.
  */
 export function teiImage(b, shared = false) {
+  const arm = b.arm || b.kind === 'mac';
+  const cpu = `${arm ? 'cpu-arm64' : 'cpu'}-${TEI}`;
   // `shared`: vLLM / SGLang reserve most of the GPU memory up front, so TEI next to them runs on the CPU
-  const gpu = !shared && b.vendor === 'nvidia' && b.kind !== 'cpu' && b.kind !== 'mac' && !b.arm;
-  const tag = !gpu ? `cpu-${TEI}` : b.arch === 'turing' ? `turing-${TEI}` : b.arch === 'ampere' ? (/A100/.test(b.label) ? TEI : `86-${TEI}`)
-    : b.arch === 'ada' ? `89-${TEI}` : b.arch === 'hopper' ? `hopper-${TEI}` : `cpu-${TEI}`;
+  let tag = cpu;
+  if (!shared && b.vendor === 'nvidia' && (b.kind === 'gpu' || b.kind === 'unified')) {
+    if (b.id === 'dgx-spark') tag = `121-${TEI}`;
+    else if (arm) tag = cpu;
+    else if (b.arch === 'turing') tag = `turing-${TEI}`;
+    else if (b.arch === 'ampere') tag = /A100/.test(b.label) ? TEI : `86-${TEI}`;
+    else if (b.arch === 'ada') tag = `89-${TEI}`;
+    else if (b.arch === 'hopper') tag = `hopper-${TEI}`;
+    else if (b.arch === 'blackwell') tag = /B200/.test(b.label) ? `100-${TEI}` : /B300/.test(b.label) ? cpu : `120-${TEI}`;
+  }
   return { image: `ghcr.io/huggingface/text-embeddings-inference:${tag}`, gpu: !tag.startsWith('cpu') };
 }
 
@@ -304,6 +333,10 @@ function stackCompose(r, b, o, base, stack) {
   if (rag) {
     env.push('RAG_EMBEDDING_ENGINE=openai', 'RAG_OPENAI_API_BASE_URL=http://embeddings:80/v1', 'RAG_OPENAI_API_KEY=none', `RAG_EMBEDDING_MODEL=${stack.embed}`);
   }
+  // Open WebUI's external reranker speaks a different API than TEI's /rerank, so with the chat UI the
+  // reranker runs inside Open WebUI (hybrid search); without it, TEI serves it for your own code.
+  const uiRerank = o.stackUi && o.stackRag && stack?.rerank;
+  if (uiRerank) env.push('ENABLE_RAG_HYBRID_SEARCH=true', `RAG_RERANKING_MODEL=${stack.rerank}`);
   const teiService = (name, model, port) => [
     `  ${name}:`,
     `    image: ${tei.image}`,
@@ -331,12 +364,11 @@ function stackCompose(r, b, o, base, stack) {
     volumes.add('open-webui: {}');
   }
   if (rag) services.push(...teiService('embeddings', stack.embed, embedPort));
-  if (o.stackRag && stack?.rerank) services.push(...teiService('reranker', stack.rerank, rerankPort));
+  if (o.stackRag && stack?.rerank && !uiRerank) services.push(...teiService('reranker', stack.rerank, rerankPort));
   const notes = [
     ...parts.head,
     '# Put a .env file next to this one with WEBUI_SECRET_KEY=<any long random string>' + (r.m.gated ? ' and HF_TOKEN=<your token>' : '') + '.',
-    ...(rag && b.arm ? ['# ARM64: if text-embeddings-inference has no arm64 image for your version, turn RAG off in Customize.'] : []),
-    ...(o.stackUi || rag ? [`# ${[o.stackUi && `Chat UI: http://localhost:${uiPort}`, rag && `embeddings: http://localhost:${embedPort}/v1/embeddings`, o.stackRag && stack?.rerank && `reranker: http://localhost:${rerankPort}/rerank`].filter(Boolean).join(' · ')}`] : []),
+    ...(o.stackUi || rag ? [`# ${[o.stackUi && `Chat UI: http://localhost:${uiPort}`, rag && `embeddings: http://localhost:${embedPort}/v1/embeddings`, o.stackRag && stack?.rerank && !uiRerank && `reranker: http://localhost:${rerankPort}/rerank`, uiRerank && `reranking by ${stack.rerank} inside Open WebUI`].filter(Boolean).join(' · ')}`] : []),
   ];
   return [...notes, 'services:', ...services, ...(volumes.size ? ['volumes:', ...[...volumes].map((v) => `  ${v}`)] : []), ...(parts.tail.length ? ['', ...parts.tail] : [])].join('\n');
 }
@@ -397,9 +429,9 @@ export function commandsFor(r, s, b, caps, opts, specs = [], stack = null) {
     tabs.ollama = { label: 'Ollama', code: `${env.length ? `${env.join(' ')} ollama serve   # in one terminal\n` : ''}ollama run ${ollamaRef(m, repo, ggufQ)}${ollamaThinkFlag(r, o)}`, note: `${o.tools ? 'OpenAI-compatible API with tool calling at http://localhost:11434/v1. ' : ''}${fit.where === 'moe-cpu' ? 'Ollama spills whole layers into RAM, which is slower for this model than llama.cpp keeping only the experts there (see the llama.cpp tab). ' : ''}Ollama does not do speculative decoding: use llama.cpp, vLLM or SGLang for that.` };
     tabs.ollamaDocker = { label: 'Ollama (Docker Compose)', yaml: true, code: ollamaCompose(r, b, o, repo, ggufQ) };
     const lo = { ...o, specObj: kind === 'gguf' ? o.specObj : null };
-    tabs.llamacpp = { label: 'llama.cpp', code: `llama-server ${llamacppArgs(r, lo, repo, ggufQ).join(' ')}`, note: [`Chat UI and OpenAI-compatible API at http://localhost:${o.port || 8080}.`, lo.specObj?.method === 'mtp' ? 'MTP uses the MTP-preserving GGUF (add <code>:&lt;quant&gt;</code> to pick a file); it does not work with several parallel users or with images.' : '', lo.specObj?.experimental ? 'DFlash2 drafts need a llama.cpp build that includes DFlash2 support.' : '', thinkNote].filter(Boolean).join(' ') };
+    tabs.llamacpp = { label: 'llama.cpp', code: `llama-server ${llamacppArgs(r, lo, repo, ggufQ).join(' ')}`, note: [`Chat UI and OpenAI-compatible API at http://localhost:${o.port || 8080}.`, lo.specObj?.method === 'mtp' ? 'MTP uses the MTP-preserving GGUF (add <code>:&lt;quant&gt;</code> to pick a file); it does not work with several parallel users or with images.' : '', lo.specObj?.recent ? `${esc(lo.specObj.label)} needs a recent llama.cpp build (it reads the drafter type from the GGUF).` : '', thinkNote].filter(Boolean).join(' ') };
     tabs.llamacppDocker = { label: 'llama.cpp (Docker Compose)', yaml: true, code: llamacppCompose(r, b, lo, repo, ggufQ) };
-    tabs.lmstudio = { label: 'LM Studio', code: `lms get ${repo}`, note: `Or search “${esc(repo)}” in LM Studio${ggufQ ? ` and pick the <strong>${esc(ggufQ)}</strong> file` : ''}.${fit.where === 'moe-cpu' ? ' In the load settings turn on <strong>Force model expert weights onto CPU</strong> (or set how many layers keep their experts on the CPU).' : ''}` };
+    tabs.lmstudio = { label: 'LM Studio', code: `lms get https://huggingface.co/${repo}${ggufQ ? `@${ggufQ}` : ''}`, note: `Or search “${esc(repo)}” in LM Studio${ggufQ ? ` and pick the <strong>${esc(ggufQ)}</strong> file` : ''}.${fit.where === 'moe-cpu' ? ' In the load settings turn on <strong>Force model expert weights onto CPU</strong> (or set how many layers keep their experts on the CPU).' : ''}` };
   } else {
     tabs.ollama = { label: 'Ollama', note: `No GGUF build of this model is tracked yet. <a href="${search(`${base} gguf`)}" rel="noopener">Search GGUF builds on Hugging Face</a>, then run <code>ollama run hf.co/&lt;repo&gt;${ggufQ ? `:${esc(ggufQ)}` : ''}</code>.` };
   }
@@ -410,8 +442,11 @@ export function commandsFor(r, s, b, caps, opts, specs = [], stack = null) {
     const srepo = fit.repo;
     const specNote = o.specObj ? `Speculative decoding: ${esc(o.specObj.label)}${o.specObj.draft ? ` (<a href="https://huggingface.co/${esc(o.specObj.draft)}" rel="noopener">${esc(o.specObj.draft)}</a>)` : ''}; needs a recent vLLM / SGLang release, check the draft's model card if a flag is rejected.` : '';
     const quantNote = fit.onTheFly ? 'No FP8 build tracked, so the original weights are quantized to FP8 when loading.' : '';
-    tabs.vllm = { label: 'vLLM (Docker Compose)', yaml: true, code: vllmCompose(r, b, o, srepo), note: [quantNote, specNote, thinkNote, `Start with <code>docker compose up -d</code>; OpenAI-compatible API at http://localhost:${o.port || 8000}/v1.`].filter(Boolean).join(' ') };
-    tabs.sglang = { label: 'SGLang (Docker Compose)', yaml: true, code: sglangCompose(r, b, o, srepo), note: [quantNote, specNote, think?.mode === 'hybrid' && o.think === 'off' ? 'SGLang has no server-wide switch for thinking: send <code>"chat_template_kwargs": {"enable_thinking": false}</code> with each request.' : thinkNote, `Start with <code>docker compose up -d</code>; OpenAI-compatible API at http://localhost:${o.port || 30000}/v1.`].filter(Boolean).join(' ') };
+    // vLLM has no server-wide reasoning effort for gpt-oss: clients send it with each request
+    const vllmThink = think?.mode === 'effort' ? `Reasoning effort: send <code>"reasoning_effort": "${esc(o.think)}"</code> with each request (vLLM has no server-wide setting for it).` : thinkNote;
+    const toolsNote = o.tools && !toolParser(m) ? 'No vLLM tool-call parser is known for this model: check its model card for <code>--tool-call-parser</code> before enabling tool calling.' : '';
+    tabs.vllm = { label: 'vLLM (Docker Compose)', yaml: true, code: vllmCompose(r, b, o, srepo), note: [quantNote, specNote, vllmThink, toolsNote, `Start with <code>docker compose up -d</code>; OpenAI-compatible API at http://localhost:${o.port || 8000}/v1.`].filter(Boolean).join(' ') };
+    tabs.sglang = { label: 'SGLang (Docker Compose)', yaml: true, code: sglangCompose(r, b, o, srepo), note: [quantNote, specNote, thinkNote, `Start with <code>docker compose up -d</code>; OpenAI-compatible API at http://localhost:${o.port || 30000}/v1.`].filter(Boolean).join(' ') };
     tabs.vllmCli = { label: 'vLLM (pip)', code: `pip install vllm\nvllm serve ${srepo} \\\n  ${vllmArgs(r, b, o, srepo).slice(1).join(' \\\n  ')}` };
     tabs.transformers = { label: 'Transformers', code: `pip install transformers accelerate torch\npython -c "from transformers import pipeline; p = pipeline('text-generation', model='${m.id}', device_map='auto'); print(p([{'role': 'user', 'content': 'Hello!'}], max_new_tokens=100))"`, note: 'Simple and slow: fine for a quick test; use vLLM or SGLang to serve.' };
   }
@@ -432,7 +467,7 @@ export function commandsFor(r, s, b, caps, opts, specs = [], stack = null) {
     const base = server && tabs[server[0]]?.code && b.kind !== 'mac' ? { text: tabs[server[0]].code, kind: server[1], url: `http://${server[1]}:${server[2]}/v1`, keyVar: server[3] } : null;
     if (base || b.kind === 'mac') {
       tabs.stack = { label: 'Full stack: Open WebUI + RAG (Docker Compose)', yaml: true, code: stackCompose({ ...r, rtHost: primary }, b, o, base, stack),
-        note: `${base ? `The model server from the ${esc(primary === 'any' ? 'Ollama' : RUNTIME_NAMES[primary] || primary)} tab` : 'Your native model server (Docker on a Mac cannot use the GPU)'}${o.stackUi ? ', <a href="https://docs.openwebui.com" rel="noopener">Open WebUI</a> already connected to it' : ''}${o.stackRag && stack?.embed ? `, and <a href="https://huggingface.co/${esc(stack.embed)}" rel="noopener">${esc(stack.embed)}</a> for document search${stack.rerank ? ` plus <a href="https://huggingface.co/${esc(stack.rerank)}" rel="noopener">${esc(stack.rerank)}</a> to rerank` : ''} (picked for your machine by the RAG part of the advisor)` : ''}. Turn parts on or off in Customize.` };
+        note: `${base ? `The model server from the ${{ vllm: 'vLLM', sglang: 'SGLang', llama: 'llama.cpp', ollama: 'Ollama' }[base.kind]} tab` : 'Your native model server (Docker on a Mac cannot use the GPU)'}${o.stackUi ? ', <a href="https://docs.openwebui.com" rel="noopener">Open WebUI</a> already connected to it' : ''}${o.stackRag && stack?.embed ? `, and <a href="https://huggingface.co/${esc(stack.embed)}" rel="noopener">${esc(stack.embed)}</a> for document search${stack.rerank ? ` plus <a href="https://huggingface.co/${esc(stack.rerank)}" rel="noopener">${esc(stack.rerank)}</a> to rerank` : ''} (picked for your machine by the RAG part of the advisor)` : ''}. Turn parts on or off in Customize.` };
       const after = { vllm: 'vllm', sglang: 'sglang', llamacpp: 'llamacppDocker', ollama: 'ollamaDocker', lmstudio: 'lmstudio', mlx: 'mlx', transformers: 'transformers' }[primary] || 'ollamaDocker';
       for (const list of Object.values(order)) { const i = list.indexOf(after); if (i >= 0 && !list.includes('stack')) list.splice(i + 1, 0, 'stack'); }
     }

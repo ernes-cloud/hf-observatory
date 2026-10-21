@@ -139,7 +139,7 @@ export function specOptions(m, runtime, s) {
   const out = [];
   const drafts = m.dr || [];
   if (['vllm', 'sglang'].includes(runtime)) {
-    const allowed = runtime === 'sglang' ? ['dflash2', 'dflash', 'dspark', 'eagle3', 'eagle'] : ['dflash2', 'dflash', 'eagle3', 'eagle'];
+    const allowed = ['dflash2', 'dflash', 'dspark', 'eagle3', 'eagle']; // both servers support all of these drafters
     for (const method of allowed) {
       const d = drafts.find((x) => x.m === method && !x.g);
       if (d) out.push({ method, draft: d.id, draftP: d.p || 1, ...SPEC[method] });
@@ -147,8 +147,12 @@ export function specOptions(m, runtime, s) {
     if (m.mtp) out.push({ method: 'mtp', draft: null, draftP: 0, ...SPEC.mtp, vllmMethod: mtpMethod(m) });
   } else if (runtime === 'llamacpp') {
     if (m.gmtp && s.users <= 1 && s.use !== 'vision') out.push({ method: 'mtp', draft: null, draftP: 0, ...SPEC.mtp, gguf: m.gmtp });
-    const d = drafts.find((x) => x.m === 'dflash2' && x.g);
-    if (d) out.push({ method: 'dflash2', draft: d.id, draftP: d.p || 1, ...SPEC.dflash2, experimental: true });
+    // GGUF drafters: llama.cpp's --spec-type draft-dflash (DFlash or DFlash2, read from the GGUF),
+    // draft-dspark and draft-eagle3
+    for (const method of ['dflash2', 'dflash', 'dspark', 'eagle3']) {
+      const d = drafts.find((x) => x.m === method && x.g);
+      if (d) out.push({ method, draft: d.id, draftP: d.p || 1, ...SPEC[method], recent: true });
+    }
   }
   return out;
 }
@@ -192,8 +196,12 @@ export function toolParser(m) {
   const id = m.id.toLowerCase();
   if (/qwen3-coder/.test(id)) return 'qwen3_coder';
   if (/qwen3\.[5-9]|qwen3\.\d{2}/.test(id)) return 'qwen3_xml';
+  if (/gemma-?4/.test(id)) return 'gemma4';
   return TOOL_PARSERS[m.fam] || null;
 }
+/** SGLang names its tool-call parsers differently (and has no XML Qwen parser: Qwen3.5+ use qwen3_coder there). */
+const SGLANG_TOOL_PARSERS = { qwen3_xml: 'qwen3_coder', qwen3_coder: 'qwen3_coder', hermes: 'hermes', llama3_json: 'llama3', openai: 'gpt-oss', glm45: 'glm45', kimi_k2: 'kimi_k2', deepseek_v3: 'deepseekv3', mistral: 'mistral' };
+export const sglangToolParser = (m) => SGLANG_TOOL_PARSERS[toolParser(m)] || null;
 
 /* ------------------------------------------------------------------ memory */
 
@@ -665,7 +673,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       const ratio = fit.tps / targetSpeed(s.priority);
       penalty('Slower than the speed you asked for', fit.tps < 3 ? 6 : ratio < 0.35 ? 4 : ratio < 0.6 ? 2 : ratio < 0.85 ? 0.7 : 0);
     }
-    if (fit.spec) why.push(`${fit.spec.label}: ≈ ${round1(fit.tps / fit.tpsBase)}× faster generation${fit.spec.experimental ? ' (needs a llama.cpp build with DFlash2)' : ''}`);
+    if (fit.spec) why.push(`${fit.spec.label}: ≈ ${round1(fit.tps / fit.tpsBase)}× faster generation${fit.spec.recent ? ' (needs a recent llama.cpp)' : ''}`);
     if (kind === 'st' && fit.repo !== m.id) why.push(`Pre-quantized ${fit.quant} build available for your ${b.arch === 'blackwell' && fit.quant === 'NVFP4' ? 'Blackwell GPU (native FP4)' : 'GPU'}`);
     if (kind === 'gguf' && !m.gguf) { penalty('No GGUF build tracked', 1.5); why.push('No GGUF build tracked yet: use the search link below'); }
     if (kind === 'mlx' && !m.mlx) penalty('No MLX build tracked', 1);

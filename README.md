@@ -13,14 +13,20 @@ It is built entirely on the open dataset
 |---|---|
 | **Overview** | Totals (live, removed, gated, % open license), top publishers by model count and by 30-day downloads, tasks, licenses, sizes, formats, languages, families and models created per week. |
 | **Model finder** | “Which model fits my needs?” Filter by text, task, language, commercial-use license, hardware budget (“fits in 16 GB”), format (GGUF, MLX, ONNX…), hide gated models; sort by downloads, likes, trending, newest or size. Each result has a short English model card and a link to the Hub. Filters are kept in the URL, so searches can be shared. |
+| **Trends** | Download evolution across past releases (7/14/30-day windows): rising, fading, breakout and newcomer models with sparklines, publishers gaining or losing ground, adoption by family (Qwen, Llama, Mistral, Gemma…) as share of downloads or model count, and what is trending now. |
 | **Family trees** | Which base models spawn the most derivatives (fine-tunes, quantizations, adapters, merges), derivatives by family, and a navigable radial graph + collapsible tree per base model. |
 | **Graveyard** | Models removed from the Hub: who removes the most, how long they lived, removals per week, and how gated/unclear-license models compare with live ones. Searchable list of every removed model. |
+| **Newsletter** | A weekly English summary generated automatically by comparing two releases a week apart: new models, removals, notable moves, busiest publishers. Monday-to-Monday issues are archived; a “Last 7 days” issue refreshes with every update. Available as Markdown and as an [RSS feed](web/data/newsletter/feed.xml) on the site. |
 
 ![Overview](docs/screenshots/overview.png)
 
 | Model finder | Mobile, dark theme |
 |---|---|
 | ![Model finder](docs/screenshots/finder.png) | ![Model finder on mobile](docs/screenshots/finder-mobile.png) |
+
+| Trends | Newsletter |
+|---|---|
+| ![Trends](docs/screenshots/trends.png) | ![Newsletter](docs/screenshots/newsletter.png) |
 
 | Family trees | Graveyard |
 |---|---|
@@ -58,15 +64,21 @@ Requirements: Python 3.10+, Node 18+ (only for the headless test).
 ```bash
 pip install -r pipeline/requirements.txt
 
-# Download the latest bulk and build web/data/ (~250 MB download, ~10 s of processing)
+# Quick: only the latest bulk (~250 MB). Trends and Newsletter will show "not enough history".
 python pipeline/build.py --no-history
+
+# Full: also the past releases used by Trends and the Newsletter (one ~250 MB download per release
+# the first time, ~40 releases by default; each is reduced to a ~2 MB Parquet file and cached)
+python pipeline/build.py
 
 # Serve the site
 python -m http.server 8000 --directory web    # → http://localhost:8000
 ```
 
 Useful flags: `--latest-gz path/to/models.jsonl.gz` reuses a file you already downloaded;
-`--cache DIR` changes where downloads and snapshots are kept (default `pipeline/.cache`).
+`--cache DIR` changes where downloads and snapshots are kept (default `pipeline/.cache`);
+`--history-days N` / `--max-snapshots N` control how much history is used (daily snapshots for the last
+N days, Mondays only before that).
 
 Tests:
 
@@ -93,6 +105,9 @@ npm run screenshots                       # refresh docs/screenshots/
   “other derivatives”. Parents are matched case-insensitively and only live models are counted as derivatives.
   Very large families are trimmed in the tree (top 120 children of the base, top 25 below that, 4 generations).
 * Removal dates are when the radar *detected* the 404, not when the author deleted the model.
+* Trends compare the first export of each day (`vN.0.0`). Rankings only include models present in both
+  snapshots, so the radar adding models over time is not mistaken for growth. Releases v29–v34 were rebuilt by
+  the dataset author after a worker outage (Sep 17–22, 2026); their dates are taken from the version number.
 
 ## License and attribution
 

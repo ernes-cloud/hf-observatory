@@ -93,6 +93,7 @@ def summarize(cfg: dict) -> dict | None:
             return None
         per_layer = 2 * kv_heads * head_dim * 2  # keys and values, 2 bytes each
     out["kvb"] = round(full * per_layer)
+    out["nl"] = layers
     if sliding:
         out["kvs"] = round(sliding * per_layer)
         out["win"] = int(win)

@@ -207,8 +207,13 @@ function llamacppArgs(r, o, repo, quant) {
   const sp = o.specObj;
   const think = thinkingOf({ ...r.m, reasoning: r.reasoning });
   // MTP-preserving GGUF repos name their files differently, so let llama.cpp pick the default file there.
-  const args = [`-hf ${sp?.method === 'mtp' ? sp.gguf : `${repo}${quant ? `:${quant}` : ''}`}`, `-c ${o.ctx}`, '-ngl 99', `--host 0.0.0.0 --port ${o.port || 8080}`];
+  // Layers on the GPU: all of them, unless whole layers have to spill into system RAM.
+  const f = r.fit;
+  const ngl = f.where === 'split' && r.m.nl && f.need?.total ? Math.max(0, Math.floor(r.m.nl * Math.min(1, (f.gpuMem || 0) / f.need.total))) : 99;
+  const args = [`-hf ${sp?.method === 'mtp' ? sp.gguf : `${repo}${quant ? `:${quant}` : ''}`}`, `-c ${o.ctx}`, `-ngl ${ngl}`, `--host 0.0.0.0 --port ${o.port || 8080}`];
   if (o.kv !== 'f16') args.push(`-fa on -ctk ${o.kv === 'q8' ? 'q8_0' : 'q4_0'} -ctv ${o.kv === 'q8' ? 'q8_0' : 'q4_0'}`);
+  // MoE too big for the GPU: keep the experts of the first N layers in RAM, everything else on the GPU
+  if (r.fit.where === 'moe-cpu') args.push(r.fit.cpuMoe ? `--n-cpu-moe ${r.fit.cpuMoe}` : '--cpu-moe');
   if (o.users > 1 && sp?.method !== 'mtp') args.push(`-np ${o.users}`);
   if (sp?.method === 'mtp') args.push('--spec-type draft-mtp');
   if (sp?.method === 'dflash2') args.push(`-hfd ${sp.draft} --spec-draft-n-max ${o.specTokens}`);
@@ -281,12 +286,12 @@ export function commandsFor(r, s, b, caps, opts, specs = []) {
   const tabs = {};
   if (repo) {
     const env = ollamaEnv(o, false);
-    tabs.ollama = { label: 'Ollama', code: `${env.length ? `${env.join(' ')} ollama serve   # in one terminal\n` : ''}ollama run ${ollamaRef(m, repo, ggufQ)}${ollamaThinkFlag(r, o)}`, note: `${o.tools ? 'OpenAI-compatible API with tool calling at http://localhost:11434/v1. ' : ''}Ollama does not do speculative decoding: use llama.cpp, vLLM or SGLang for that.` };
+    tabs.ollama = { label: 'Ollama', code: `${env.length ? `${env.join(' ')} ollama serve   # in one terminal\n` : ''}ollama run ${ollamaRef(m, repo, ggufQ)}${ollamaThinkFlag(r, o)}`, note: `${o.tools ? 'OpenAI-compatible API with tool calling at http://localhost:11434/v1. ' : ''}${fit.where === 'moe-cpu' ? 'Ollama spills whole layers into RAM, which is slower for this model than llama.cpp keeping only the experts there (see the llama.cpp tab). ' : ''}Ollama does not do speculative decoding: use llama.cpp, vLLM or SGLang for that.` };
     tabs.ollamaDocker = { label: 'Ollama (Docker Compose)', yaml: true, code: ollamaCompose(r, b, o, repo, ggufQ) };
     const lo = { ...o, specObj: kind === 'gguf' ? o.specObj : null };
     tabs.llamacpp = { label: 'llama.cpp', code: `llama-server ${llamacppArgs(r, lo, repo, ggufQ).join(' ')}`, note: [`Chat UI and OpenAI-compatible API at http://localhost:${o.port || 8080}.`, lo.specObj?.method === 'mtp' ? 'MTP uses the MTP-preserving GGUF (add <code>:&lt;quant&gt;</code> to pick a file); it does not work with several parallel users or with images.' : '', lo.specObj?.experimental ? 'DFlash2 drafts need a llama.cpp build that includes DFlash2 support.' : '', thinkNote].filter(Boolean).join(' ') };
     tabs.llamacppDocker = { label: 'llama.cpp (Docker Compose)', yaml: true, code: llamacppCompose(r, b, lo, repo, ggufQ) };
-    tabs.lmstudio = { label: 'LM Studio', code: `lms get ${repo}`, note: `Or search “${esc(repo)}” in LM Studio${ggufQ ? ` and pick the <strong>${esc(ggufQ)}</strong> file` : ''}.` };
+    tabs.lmstudio = { label: 'LM Studio', code: `lms get ${repo}`, note: `Or search “${esc(repo)}” in LM Studio${ggufQ ? ` and pick the <strong>${esc(ggufQ)}</strong> file` : ''}.${fit.where === 'moe-cpu' ? ' In the load settings turn on <strong>Force model expert weights onto CPU</strong> (or set how many layers keep their experts on the CPU).' : ''}` };
   } else {
     tabs.ollama = { label: 'Ollama', note: `No GGUF build of this model is tracked yet. <a href="${search(`${base} gguf`)}" rel="noopener">Search GGUF builds on Hugging Face</a>, then run <code>ollama run hf.co/&lt;repo&gt;${ggufQ ? `:${esc(ggufQ)}` : ''}</code>.` };
   }

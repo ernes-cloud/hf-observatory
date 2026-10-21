@@ -231,13 +231,7 @@ export const MOE_EFF = 0.85;
 export function prefillOf(m, where, b, runtime) {
   const active = m.a || (m.moe ? m.p * 0.12 : m.p);
   if (!active) return null;
-  const server = ['vllm', 'sglang'].includes(runtime);
-  let util = b.kind === 'mac' ? 0.6 : b.kind === 'unified' ? (b.vendor === 'nvidia' ? (server ? 0.3 : 0.15) : 0.3)
-    : b.vendor === 'nvidia' ? (server ? 0.55 : 0.45) : 0.3;
-  let tf = (b.tf || 0) * util * (server && b.n > 1 ? b.n * 0.8 : 1);
-  if (where === 'cpu' || !b.tf) tf = (b.slowTf || 1) * 0.5;
-  else if (where === 'split') tf = 1 / (0.7 / tf + 0.3 / ((b.slowTf || 1) * 0.5)); // layers left in RAM are slow
-  return Math.min(50000, (tf * 1e12) / (2 * active * 1e9));
+  return Math.min(50000, (computeTf(b, where, runtime) * 1e12) / (2 * active * 1e9));
 }
 
 export function memNeeded(p, bpp, s, m = null) {
@@ -287,10 +281,38 @@ export function budgetOf(s) {
   const g = s.gpu === 'custom' ? { name: `${s.customVram} GB GPU`, mem: +s.customVram || 8, bw: +s.customBw || 400, arch: s.customArch || 'ada', vendor: 'nvidia', tf: Math.round((+s.customBw || 400) * 0.16) } : (gpuById(s.gpu) || gpuById('rtx-4090'));
   const n = Math.max(1, s.ngpu || 1);
   const usable = Math.max(1, g.mem * n * (n > 1 ? 0.94 : 0.96) - 0.8 * n);
-  const slow = s.offload ? Math.max(0, s.ram * 0.7 - 4) : 0;
-  return { kind: 'gpu', arch: g.arch, vendor: g.vendor, fast: usable, fastBw: g.bw, tf: g.tf, slow, slowBw: cpu.bw, slowTf: cpu.tf, n,
+  const slow = s.offload ? Math.max(0, s.ram * 0.8 - 3) : 0;
+  const g2 = s.gpu !== 'custom' && s.gpu2 ? gpuById(s.gpu2) : null;
+  if (g2 && !g2.unified && !g.unified) return mixedBudget(g, n, g2, Math.max(1, s.ngpu2 || 1), s, slow, cpu);
+  return { kind: 'gpu', geforce: isGeForce(g), arch: g.arch, vendor: g.vendor, fast: usable, fastBw: g.bw, tf: g.tf, slow, slowBw: cpu.bw, slowTf: cpu.tf, n,
     label: `${n > 1 ? `${n}× ` : ''}${g.name}${n > 1 ? ` · ${g.mem * n} GB VRAM` : ` · ${g.mem} GB VRAM`}`,
     detail: `about ${Math.round(usable)} GB usable for the model, ${g.bw} GB/s per card, ${ARCH_LABEL[g.arch] || g.arch}${slow ? `; plus ~${Math.round(slow)} GB of system RAM for overflow (much slower)` : ''}.` };
+}
+
+const isGeForce = (g) => g.vendor === 'nvidia' && /^RTX [2-5]0\d0/.test(g.name || '');
+const ARCH_AGE = ['turing', 'ampere', 'rdna3', 'xe', 'ada', 'rdna4', 'cdna3', 'hopper', 'cdna4', 'blackwell'];
+
+/**
+ * Two kinds of card in one machine (e.g. an RTX 4090 and an RTX 3090). llama.cpp and Ollama split the
+ * layers in proportion to each card's memory, so a token spends time on each card in turn.
+ * vLLM / SGLang tensor parallel needs equal shards: every card counts as the smallest and slowest one.
+ */
+function mixedBudget(g, n, g2, n2, s, slow, cpu) {
+  const per = (x) => Math.max(1, x.mem * 0.94 - 0.8);
+  const total = n + n2;
+  const older = ARCH_AGE.indexOf(g.arch) <= ARCH_AGE.indexOf(g2.arch) ? g : g2;
+  const label = `${n}× ${g.name} + ${n2}× ${g2.name} · ${g.mem * n + g2.mem * n2} GB VRAM`;
+  if (['vllm', 'sglang'].includes(s.runtime)) {
+    const mem = Math.min(per(g), per(g2));
+    return { kind: 'gpu', mixed: true, geforce: isGeForce(g) && isGeForce(g2), arch: older.arch, vendor: g.vendor, fast: mem * total, fastBw: Math.min(g.bw, g2.bw), tf: Math.min(g.tf, g2.tf), slow, slowBw: cpu.bw, slowTf: cpu.tf, n: total,
+      label, detail: `tensor parallel splits the model evenly, so each of the ${total} cards counts as ${Math.round(mem)} GB at ${Math.min(g.bw, g2.bw)} GB/s (the smaller and slower one), ${ARCH_LABEL[older.arch]} formats. llama.cpp / Ollama use all of the memory.` };
+  }
+  const m1 = per(g) * n, m2 = per(g2) * n2;
+  const fast = m1 + m2;
+  // time per byte, weighted by how much of the model each card holds
+  const bw = fast / (m1 / g.bw + m2 / g2.bw);
+  return { kind: 'gpu', mixed: true, geforce: isGeForce(g) && isGeForce(g2), arch: older.arch, vendor: g.vendor, fast, fastBw: bw, tf: Math.min(g.tf, g2.tf), slow, slowBw: cpu.bw, slowTf: cpu.tf, n: 1,
+    label, detail: `about ${Math.round(fast)} GB usable; llama.cpp / Ollama put layers on both cards in proportion to their memory, ≈ ${Math.round(bw)} GB/s on average${slow ? `; plus ~${Math.round(slow)} GB of system RAM for overflow` : ''}. vLLM / SGLang would treat every card as the smaller one.` };
 }
 
 /** Effective bandwidth for one generation stream on the fast pool. */
@@ -303,24 +325,50 @@ function fastBandwidth(b, runtime) {
 }
 
 /** Estimated tokens per second for one user. */
-export function speedOf(activeP, bpp, s, b, where, runtime, kvSeq = null) {
+export function speedOf(activeP, bpp, s, b, where, runtime, kvSeq = null, totalP = activeP) {
   // Each new token reads the weights it uses plus the cache filled so far: on average about a third
   // of the window (conversations and agent runs grow into it), using the same estimate as memory.
   const kvRead = (kvSeq ?? kvGB(activeP, s.ctx)) * (KV_FACTOR[s.kv] ?? 1) * 0.35;
-  const perToken = activeP * bpp + kvRead;
+  // Several users are served together (continuous batching): one pass over the weights produces a
+  // token for each of them, but every user's cache is read. A mixture of experts touches more of its
+  // experts as the batch grows.
+  const users = Math.max(1, s.users || 1);
+  const share = activeP < totalP ? Math.max(activeP / totalP, 1 - (1 - activeP / totalP) ** users) : 1;
+  const perToken = (activeP < totalP ? totalP * share : activeP) * bpp + kvRead * users;
   // Share of the bandwidth a runtime turns into tokens, calibrated on published llama.cpp results
   // (see tests/advisor-calibration.test.mjs): ~75% on GPUs and the DGX Spark, ~70% on Apple Silicon.
   const eff = b.kind === 'cpu' ? 0.5 : b.kind === 'mac' ? 0.7 : b.kind === 'unified' ? (b.vendor === 'nvidia' ? 0.8 : 0.72) : 0.75;
   // Fixed per-token cost (kernel launches, sampling, scheduling) that bandwidth does not cover:
   // it keeps small and MoE models from reaching unrealistic speeds.
   const fixed = where === 'cpu' || b.kind === 'cpu' ? 0.004 : 0.002;
-  if (where === 'gpu') return Math.min(250, 1 / (perToken / (eff * fastBandwidth(b, runtime)) + fixed));
-  if (where === 'cpu') return Math.min(250, 1 / (perToken / (0.45 * b.slowBw) + fixed));
-  // split: the share that does not fit runs from system RAM
-  const totalNeed = perToken;
-  const fastShare = Math.min(1, Math.max(0.05, b.fast / (b.fast + (b.slowNeed || b.slow))));
-  const t = (totalNeed * fastShare) / (eff * b.fastBw) + (totalNeed * (1 - fastShare)) / (0.45 * b.slowBw) + fixed;
-  return Math.min(250, 1 / t);
+  // Batching in llama.cpp / Ollama parallel slots is less efficient than in GPU servers.
+  const batchCost = users > 1 && !['vllm', 'sglang'].includes(runtime) ? 1 + 0.08 * Math.min(users - 1, 15) : 1;
+  let step;
+  if (where === 'gpu') step = perToken / (eff * fastBandwidth(b, runtime)) + fixed;
+  else if (where === 'cpu') step = perToken / (0.45 * b.slowBw) + fixed;
+  else {
+    // split: the share that does not fit runs from system RAM
+    const fastShare = Math.min(1, Math.max(0.05, b.fast / (b.fast + (b.slowNeed || b.slow))));
+    step = (perToken * fastShare) / (eff * b.fastBw) + (perToken * (1 - fastShare)) / (0.45 * b.slowBw) + fixed;
+  }
+  // With many users the GPU runs out of compute before bandwidth: 2 FLOPs per active parameter per token.
+  if (users > 1) step = Math.max(step, (users * 2 * activeP) / (computeTf(b, where, runtime) * 1e3));
+  return Math.min(250, 1 / (step * batchCost));
+}
+
+/** Usable TFLOPS of the machine for a runtime (spec-sheet × the share runtimes reach, see prefillOf). */
+function computeTf(b, where, runtime) {
+  const server = ['vllm', 'sglang'].includes(runtime);
+  // GeForce spec sheets quote FP16 tensor TFLOPS with FP32 accumulation, which runs at half rate on
+  // those cards; llama.cpp's int8 / FP16 kernels and vLLM reach roughly the quoted figure there.
+  // Data-centre and workstation cards quote the full rate, of which runtimes reach about half.
+  const util = b.kind === 'mac' ? 0.6 : b.kind === 'unified' ? (b.vendor === 'nvidia' ? (server ? 0.3 : 0.15) : 0.3)
+    : b.vendor === 'nvidia' ? (b.geforce ? (server ? 0.8 : 0.9) : (server ? 0.55 : 0.45)) : 0.3;
+  const gpuTf = (b.tf || 0) * util * (server && b.n > 1 ? b.n * 0.8 : 1);
+  const cpuTf = (b.slowTf || 1) * 0.5;
+  if (where === 'cpu' || !b.tf) return cpuTf;
+  if (where === 'split' || where === 'moe-cpu') return 1 / (0.7 / gpuTf + 0.3 / cpuTf);
+  return gpuTf;
 }
 
 export function speedLabel(tps) {
@@ -360,8 +408,15 @@ export function fitModel(m, kind, s, b, runtime) {
     if (!where) continue;
     const bb = where === 'split' ? { ...b, slowNeed: need.total - b.fast } : b;
     // MoE routing and less regular memory access cost some of the theoretical speed-up.
-    const t = speedOf(active, bpp, s, bb, where, runtime, kvOf(m, s.ctx)) * (active < p ? MOE_EFF : 1);
-    options.push({ quant, bpp, qf: q, need, where, low: LOW_QUALITY.has(quant), tps: t, pp: prefillOf(m, where, b, runtime), download: p * bpp, repo, onTheFly });
+    const t = speedOf(active, bpp, s, bb, where, runtime, kvOf(m, s.ctx), p) * (active < p ? MOE_EFF : 1);
+    let opt = { quant, bpp, qf: q, need, where, gpuMem: where === 'split' ? b.fast : undefined, low: LOW_QUALITY.has(quant), tps: t, pp: prefillOf(m, where, b, runtime), download: p * bpp, repo, onTheFly };
+    // Mixture of experts too big for the GPU: keeping the experts in RAM (llama.cpp --n-cpu-moe)
+    // beats splitting whole layers, because attention and the shared weights stay on the GPU.
+    if (where === 'split' && kind === 'gguf' && active < p && MOE_CPU_RUNTIMES.has(runtime)) {
+      const mc = moeCpu(m, bpp, s, b, runtime);
+      if (mc && mc.tps > opt.tps) opt = { ...opt, ...mc };
+    }
+    options.push(opt);
   }
   if (!options.length) return null;
   const target = targetSpeed(s.priority);
@@ -371,6 +426,38 @@ export function fitModel(m, kind, s, b, runtime) {
   };
   const fast = options.filter((o) => o.where === 'gpu');
   return fast.length ? pick(fast) : pick(options);
+}
+
+const MOE_CPU_RUNTIMES = new Set(['llamacpp', 'lmstudio', 'any']);
+
+/**
+ * A mixture of experts with its expert weights partly in system RAM: attention, shared experts,
+ * embeddings and the KV cache stay on the GPU (about 40% of the active parameters), and as many expert
+ * layers as fit. Each token reads its few active experts from wherever they live.
+ */
+export function moeCpu(m, bpp, s, b, runtime) {
+  if (b.kind !== 'gpu' || !b.slow) return null;
+  const active = m.a || m.p * 0.12;
+  const dense = active * 0.4;
+  const need = memNeeded(m.p, bpp, s, m);
+  const gpuFixed = dense * bpp + need.kv + 0.5;
+  if (gpuFixed > b.fast) return null;
+  const experts = (m.p - dense) * bpp;
+  // Without the layer count we cannot say how many layers to keep, so all experts go to RAM (--cpu-moe).
+  const f = m.nl ? Math.max(0, Math.min(1, (b.fast - gpuFixed) / experts)) : 0;
+  const ram = (1 - f) * experts;
+  if (f >= 1 || ram > b.slow) return null;
+  const users = Math.max(1, s.users || 1);
+  const kvRead = kvOf(m, s.ctx) * (KV_FACTOR[s.kv] ?? 1) * 0.35 * users;
+  const expertRead = (active - dense) * bpp;
+  const step = (dense * bpp + expertRead * f + kvRead) / (0.75 * b.fastBw) + (expertRead * (1 - f)) / (0.45 * b.slowBw) + 0.002;
+  return {
+    where: 'moe-cpu',
+    need: { ...need, gpu: gpuFixed + f * experts, ram },
+    cpuMoe: m.nl ? Math.max(1, Math.ceil((1 - f) * m.nl)) : null,
+    tps: Math.min(250, MOE_EFF / step),
+    pp: prefillOf(m, 'moe-cpu', b, runtime),
+  };
 }
 
 /**
@@ -386,12 +473,14 @@ export function refit(r, s2, b, spec) {
   const pool = fit.where === 'gpu' ? b.fast : b.fast + b.slow;
   const active = m.a || (m.moe ? m.p * 0.12 : m.p);
   const bb = fit.where === 'split' ? { ...b, slowNeed: Math.max(0, total - b.fast) } : b;
-  const base = speedOf(active, fit.bpp, s2, bb, fit.where, r.rt, kvOf(m, s2.ctx)) * (active < m.p ? MOE_EFF : 1);
+  const mc = fit.where === 'moe-cpu' ? moeCpu(m, fit.bpp, s2, b, r.rt) : null;
+  const base = mc ? mc.tps : speedOf(active, fit.bpp, s2, bb, fit.where, r.rt, kvOf(m, s2.ctx), m.p) * (active < m.p ? MOE_EFF : 1);
   const pp = prefillOf(m, fit.where, b, r.rt);
   return {
     ...fit,
     spec,
-    need: { ...need, draft: extra || undefined, total },
+    need: { ...(mc ? mc.need : need), draft: extra || undefined, total },
+    ...(mc ? { cpuMoe: mc.cpuMoe } : {}),
     tpsBase: base,
     tps: spec ? withSpec(base, spec, s2.users) : base,
     pp,
@@ -421,6 +510,7 @@ export function runtimeKinds(s) {
   const g = s.hw === 'gpu' ? gpuById(s.gpu) : null;
   if (g?.unified && s.ngpu > 1) return ['st']; // two linked units: only vLLM / SGLang span both
   if (g?.id?.startsWith('strix-halo')) return ['gguf']; // vLLM / SGLang ROCm builds do not target this iGPU yet
+  if (s.gpu2 && s.gpu !== 'custom' && !g?.unified) return ['gguf']; // mixed cards: llama.cpp uses all their memory
   return ['gguf', 'st'];
 }
 
@@ -538,6 +628,10 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     const speed = fit.tps ? Math.log2(1 + fit.tps) : 0;
     let score = rel + pop + fresh + official + (isLLM ? wQ * quality * 0.9 + wS * speed * 0.8 : 0);
     if (fit.where === 'split') score -= 1.5;
+    if (fit.where === 'moe-cpu') {
+      score -= 0.5;
+      why.push(`Experts kept in system RAM (${fit.cpuMoe ? `llama.cpp --n-cpu-moe ${fit.cpuMoe}` : 'llama.cpp --cpu-moe'}): attention and the context stay on the GPU`);
+    }
     if (fit.where === 'cpu' && b.kind !== 'cpu') score -= 1;
     if (fit.low) score -= 1.5;
     // Too slow for the speed the user asked for: push it down (relative to the slider's target).

@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 import build  # noqa: E402
 from hfo.families import family_case_sql  # noqa: E402
-from hfo.sources import Version, pick_history  # noqa: E402
+from hfo.sources import MONDAY_MAJOR, Version, pick_history, snapshot_time  # noqa: E402
 
 
 def model(id_, **kw):
@@ -96,7 +96,7 @@ def test_pick_history_daily_then_weekly():
     majors = [v.major for v in picked]
     assert all(v.minor == 0 and v.patch == 0 for v in picked)  # first export of each day
     assert majors[-10:] == list(range(51, 61))
-    assert all((60 - m) % 7 == 0 for m in majors[:-10])
+    assert majors[:-10] and all((m - MONDAY_MAJOR) % 7 == 0 for m in majors[:-10])
     assert len(pick_history(versions, 10, 5)) == 5
 
 
@@ -115,3 +115,48 @@ def test_family_trees(built):
     assert top["by_relation"]["finetune"] == 1 and top["by_relation"]["quantized"] == 1
     tree = json.loads((built / "families" / f"tree-{top['tree']}.json").read_text())
     assert {c["i"] for c in tree["tree"]["c"]} == {"someone/my-assistant", "quant/Qwen3-8B-GGUF"}
+
+
+def test_snapshot_time_trusts_version_for_rebuilt_releases():
+    # normal export: data timestamp on the version's day is kept
+    assert snapshot_time({"major": 35, "snapshot_at": "2026-09-23T03:59:50Z"}) == "2026-09-23T03:59:50Z"
+    # rebuilt release (v30 = Sep 18) stamped with the rebuild time → use the version's day
+    assert snapshot_time({"major": 30, "snapshot_at": "2026-09-22T16:07:17Z"}) == "2026-09-18T04:00:00Z"
+
+
+def test_trends_and_newsletter(built, tmp_path):
+    from hfo import newsletter, trends
+    from hfo.common import connect
+
+    con = connect()
+    con.execute(f"CREATE TABLE m AS SELECT * FROM '{(tmp_path / 'cache' / 'latest.parquet').as_posix()}'")
+    # A Monday snapshot a week earlier (v54 = Oct 12) where Qwen had fewer downloads,
+    # the GGUF did not exist yet and the removed model was still live.
+    old = tmp_path / "v54.parquet"
+    con.execute(f"""COPY (
+        SELECT id, author, created_at, updated_at, pipeline_tag, license_family, likes,
+               CASE WHEN id = 'Qwen/Qwen3-8B' THEN 400 ELSE downloads_30d END AS downloads_30d,
+               trending_score, parameters, gated, false AS removed, NULL::TIMESTAMPTZ AS removed_at, family
+        FROM m WHERE id <> 'quant/Qwen3-8B-GGUF') TO '{old.as_posix()}' (FORMAT parquet)""")
+    con.execute("UPDATE m SET created_at = TIMESTAMPTZ '2026-10-17 00:00:00+00' WHERE id = 'quant/Qwen3-8B-GGUF'")
+    snaps = [{"tag": "v54.0.0", "major": 54, "snapshot_at": "2026-10-12T04:00:00Z", "models": 5, "path": str(old)}]
+    meta = {"snapshot_at": "2026-10-19T04:00:00Z", "models": 5, "release": "v61.0.0"}
+    data, loaded = trends.build(con, snaps, meta)
+    w = data["windows"]["7"]
+    assert w["rising"][0]["id"] == "Qwen/Qwen3-8B" and w["rising"][0]["delta"] == 600
+    assert [m["id"] for m in w["newcomers"]] == ["quant/Qwen3-8B-GGUF"]
+
+    loaded[-1]["major"] = 61  # the latest snapshot is the Monday v61 export
+    index, issues, feed = newsletter.build(con, loaded)
+    issue = issues[index["issues"][0]["slug"]]
+    assert issue["stats"]["created"] == 1 and issue["stats"]["removed"] == 1
+    assert issue["top_new"][0]["id"] == "quant/Qwen3-8B-GGUF"
+    assert "Oct 12" in issue["title"] and "quant/Qwen3-8B-GGUF" in issue["markdown"]
+    assert "<rss" in feed and "<item>" in feed
+
+
+def test_monday_anchor_is_a_monday():
+    from hfo.sources import MONDAY_DATE, version_day
+
+    assert MONDAY_DATE.weekday() == 0
+    assert version_day(MONDAY_MAJOR) == MONDAY_DATE

@@ -241,3 +241,15 @@ def test_configs_cache_offline(tmp_path, monkeypatch):
     monkeypatch.setenv("HFO_OFFLINE", "1")
     got = load_configs(["a/b", "c/d", "e/f"], tmp_path)
     assert got == {"a/b": {"t": 1, "kvb": 1000, "mc": 4096}}
+
+
+def test_published_evals_only_from_labs_and_known_benchmarks():
+    import json as _json
+    from hfo.advisor import published_evals
+    rows = [{"dataset": "LibriSpeech (clean)", "metric": "Test WER", "value": 1.69}, {"dataset": "Common Voice 11.0", "metric": "WER", "value": 87.3},
+            {"dataset": "MTEB ArguAna", "metric": None, "value": 60.1}, {"dataset": "my private set", "metric": "acc", "value": 99},
+            {"dataset": "AMI (Meetings test)", "metric": "Test WER", "value": 11.2}]
+    ev, mteb, wer = published_evals({"author": "nvidia", "benchmarks_json": _json.dumps(rows)})
+    assert [e[0] for e in ev] == ["LibriSpeech (clean)", "AMI (Meetings test)"] and mteb == 1 and wer == 1.69
+    # anyone else's claims are ignored
+    assert published_evals({"author": "someone", "benchmarks_json": _json.dumps(rows)}) == ([], 0, None)

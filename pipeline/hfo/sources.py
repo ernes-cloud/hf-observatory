@@ -36,7 +36,7 @@ LATEST_COLUMNS = """
     id, author, url, created_at, updated_at, license, license_family, pipeline_tag,
     library, languages, tags, likes, downloads_30d, trending_score, parameters,
     storage_bytes, base_model, formats, is_conversational, gated, removed, removed_at,
-    len(benchmarks) AS n_benchmarks
+    len(benchmarks) AS n_benchmarks, to_json(benchmarks) AS benchmarks_json
 """
 
 # Columns kept for historical snapshots (trends + newsletter).

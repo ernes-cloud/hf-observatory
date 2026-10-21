@@ -609,3 +609,19 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 8px 0 2p
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .fav-shared { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 0 16px 12px; background: var(--surface); }
 .fav-shared p { margin: 0 0 6px; overflow-wrap: anywhere; }
+
+/* ---------- Advisor: reported evals & score breakdown ---------- */
+.evals { margin: 6px 0 0; font-size: .82rem; overflow-wrap: anywhere; }
+.score { margin: 8px 0 4px; font-size: .84rem; }
+.score summary { cursor: pointer; color: var(--ink-2); }
+.score-list { list-style: none; margin: 8px 0 4px; padding: 0; display: grid; gap: 4px; }
+.score-list li { display: grid; grid-template-columns: minmax(0, 13em) minmax(0, 1fr) 3.2em; gap: 8px; align-items: center; }
+.score-label { color: var(--ink-2); min-width: 0; }
+.score-bar { height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+.score-bar span { display: block; height: 100%; border-radius: 4px; background: var(--good); }
+.score-list .neg .score-bar span { background: var(--bad); }
+.score-val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.score-list .neg .score-val { color: var(--bad); }
+@media (max-width: 520px) { .score-list li { grid-template-columns: minmax(0, 1fr) 3.2em; } .score-bar { grid-column: 1 / -1; grid-row: 2; } }
+/* Off-screen result cards skip layout and paint until scrolled near (big lists re-render fast). */
+.advice { content-visibility: auto; contain-intrinsic-size: auto 560px; }

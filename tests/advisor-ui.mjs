@@ -269,6 +269,25 @@ for (const [name, viewport, steps] of [['desktop', { width: 1280, height: 900 },
   await ctx.close();
 }
 
+// Responsiveness: changing the machine re-ranks thousands of models and redraws the cards.
+{
+  const { ctx, page, errors } = await open({ width: 1280, height: 900 }, '#advisor?u=agents&g=rtx-4090&rt=vllm');
+  const times = [];
+  for (const v of ['rtx-5090', 'dgx-spark', 'rtx-3090', 'h100-sxm', 'rtx-4090']) {
+    times.push(await page.evaluate(async (v) => {
+      const t = performance.now();
+      const sel = document.querySelector('#a-gpu'); sel.value = v; sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+      return performance.now() - t;
+    }, v));
+  }
+  const median = times.sort((a, b) => a - b)[2];
+  if (median > 400) failures.push(`responsiveness: a machine change takes ${Math.round(median)} ms (median)`);
+  await check(page, errors, 'responsiveness');
+  console.log(`  machine change: median ${Math.round(median)} ms`);
+  await ctx.close();
+}
+
 // Old shared links (unified machines had their own switch) still open the right machine.
 {
   const { ctx, page, errors } = await open({ width: 1280, height: 900 }, '#advisor?hw=unified&uf=dgx-spark&nu=2&rt=vllm');

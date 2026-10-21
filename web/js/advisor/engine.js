@@ -500,8 +500,14 @@ export function capacity(kind, s, b) {
 
 /* ------------------------------------------------------------------ ranking */
 
-const capIndex = (caps, name) => caps.indexOf(name);
-export const hasCap = (data, m, name) => { const i = capIndex(data.caps, name); return i >= 0 && ((m.caps >> i) & 1) === 1; };
+// capability name → bit, computed once per data file (models store their capabilities as a bit mask)
+const BITS = new WeakMap();
+function capBits(caps) {
+  let bits = BITS.get(caps);
+  if (!bits) { bits = Object.fromEntries(caps.map((c, i) => [c, 1 << i])); BITS.set(caps, bits); }
+  return bits;
+}
+export const hasCap = (data, m, name) => (m.caps & (capBits(data.caps)[name] || 0)) !== 0;
 
 export function runtimeKinds(s) {
   if (s.runtime !== 'any') return [RUNTIMES[s.runtime].kind];
@@ -517,7 +523,20 @@ export function runtimeKinds(s) {
 /** Rough "how capable" proxy: bigger and less compressed is better; MoE counts between active and total. */
 export const qualityOf = (m, fit) => Math.log2(1 + (m.a ? Math.sqrt(m.a * m.p) : m.p)) * (fit ? fit.qf : 1);
 
+// Static per-model facts, computed once per data file: MoE flag and the near-duplicate key.
+const PREPARED = new WeakSet();
+function prepare(data) {
+  if (PREPARED.has(data)) return;
+  const moeBit = capBits(data.caps).moe || 0;
+  for (const m of data.models) {
+    m.moe = !!m.a || (m.caps & moeBit) !== 0;
+    m.dup = m.id.split('/').pop().toLowerCase().replace(/[-_.](instruct|it|chat|gguf|awq|gptq|fp8|int[48]|bf16|nvfp4|mxfp4|mlx|w\d+a\d+|\d+bit|\d+gb)(?=[-_.]|$).*$/, '');
+  }
+  PREPARED.add(data);
+}
+
 export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
+  prepare(data);
   const use = USES.find((u) => u.v === s.use) || USES[0];
   const kindCfg = s.use === 'agents' ? agentKind(s.agent) : null;
   const b = budgetOf(s);
@@ -525,7 +544,9 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
   const kinds = runtimeKinds(s);
   const lo = SIZE_STOPS[s.sizeLo ?? 0], hi = SIZE_STOPS[s.sizeHi ?? SIZE_STOPS.length - 1];
   const sizeFiltered = (s.sizeLo ?? 0) > 0 || (s.sizeHi ?? SIZE_STOPS.length - 1) < SIZE_STOPS.length - 1;
-  const has = (m, c) => hasCap(data, m, c);
+  const bits = capBits(data.caps);
+  const has = (m, c) => (m.caps & (bits[c] || 0)) !== 0;
+  const toolFams = new Set(data.tool_families);
   const wQ = 1.8 * (1 - s.priority / 100) + 0.4;
   const wS = 1.8 * (s.priority / 100) + 0.2;
   const out = [];
@@ -542,16 +563,16 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       if (m.p < lo * 0.9 || m.p > hi * 1.1) continue;
     }
     const name = m.id.toLowerCase();
-    const isMoe = !!m.a || has(m, 'moe');
+    const isMoe = m.moe;
     if (s.archFilter === 'moe' && !isMoe) continue;
     if (s.archFilter === 'dense' && isMoe) continue;
-    if (must.has('tools') && !has(m, 'tools') && !(data.tool_families.includes(m.fam) && has(m, 'chat'))) continue;
+    if (must.has('tools') && !has(m, 'tools') && !(toolFams.has(m.fam) && has(m, 'chat'))) continue;
     if (must.has('vision') && !has(m, 'vision')) continue;
     if (must.has('reasoning') && !has(m, 'reasoning') && !thinkingOf(m)) continue;
     if (must.has('longctx') && !(m.mc ? m.mc >= 131072 : has(m, 'longctx'))) continue;
     if (isLLM && /(^|[-_/])base([-_]|$)/.test(name) && !has(m, 'chat')) continue;
     if (s.use === 'vision' && !has(m, 'vision')) continue;
-    if (s.use === 'code' && !has(m, 'code') && !(has(m, 'chat') && data.tool_families.includes(m.fam))) continue;
+    if (s.use === 'code' && !has(m, 'code') && !(has(m, 'chat') && toolFams.has(m.fam))) continue;
     if (kindCfg?.requires && !has(m, kindCfg.requires)) continue;
     if (s.use === 'rag' && s.ragPart && s.ragPart !== 'both') {
       if (s.ragPart === 'rerank' && !has(m, 'rerank')) continue;
@@ -568,7 +589,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
         if (kinds.length > 1 && k === 'gguf' && !m.gguf) continue;
         if (kinds.length > 1 && k === 'mlx' && !m.mlx) continue;
         if (k === 'st' && !m.st) continue;
-        const f = fitModel({ ...m, moe: has(m, 'moe') }, k, sm, b, s.runtime);
+        const f = fitModel(m, k, sm, b, s.runtime);
         if (!f) continue;
         if (!fit || (f.where === 'gpu' && fit.where !== 'gpu') || (f.where === fit.where && f.tps > fit.tps * 1.15)) { fit = f; kind = k; }
       }
@@ -599,7 +620,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     // relevance to the job
     if (kindCfg) {
       for (const [cap, w] of Object.entries(kindCfg.weights)) if (has(m, cap)) rel += w;
-      if (!has(m, 'tools') && data.tool_families.includes(m.fam) && has(m, 'chat')) { rel += 2; why.push(`${m.fam} instruct models support tool calling`); }
+      if (!has(m, 'tools') && toolFams.has(m.fam) && has(m, 'chat')) { rel += 2; why.push(`${m.fam} instruct models support tool calling`); }
       if (m.p != null && m.p < kindCfg.minP) rel -= 2;
       if (has(m, 'swe') && s.agent === 'coding') why.push('Trained or evaluated for agentic coding (SWE-style tasks)');
       if (has(m, 'computer') && s.agent === 'computer') why.push('Built for GUI / computer use');
@@ -607,6 +628,8 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       if (has(m, 'tools')) why.push('Tagged for tool calling');
     }
     if (s.use === 'code') { if (has(m, 'code')) { rel += 4; why.push('Built for code'); } if (has(m, 'swe')) rel += 1; }
+    // Word error rate the developers report on LibriSpeech test-clean (lower is better)
+    if (s.use === 'asr' && m.wer != null) { rel += m.wer <= 2 ? 1.5 : m.wer <= 3.5 ? 0.8 : 0; why.push(`${m.wer}% word error rate on LibriSpeech (clean), as reported by its developers`); }
     if (s.use === 'reasoning') { if (has(m, 'reasoning')) { rel += 4; why.push('Thinking / reasoning model'); } if (has(m, 'math')) rel += 1; }
     if (s.use === 'writing' && has(m, 'roleplay')) { rel += 3; why.push('Tuned for creative writing'); }
     if (s.use === 'vision' && has(m, 'computer')) rel += 0.5;
@@ -626,23 +649,27 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     // quality vs speed
     const quality = isLLM ? qualityOf(m, fit) : 0;
     const speed = fit.tps ? Math.log2(1 + fit.tps) : 0;
-    let score = rel + pop + fresh + official + (isLLM ? wQ * quality * 0.9 + wS * speed * 0.8 : 0);
-    if (fit.where === 'split') score -= 1.5;
+    // Every term of the score is kept, so a card can show why it ranks where it does.
+    const parts = [['Fits the job', rel], ['Popularity', pop], ['Recent release', fresh], ['From the original lab', official]];
+    if (isLLM) parts.push(['Answer quality (size × precision)', wQ * quality * 0.9], ['Speed on your machine', wS * speed * 0.8]);
+    const penalty = (label, x) => { if (x) parts.push([label, -x]); };
+    if (fit.where === 'split') penalty('Part of it in system RAM', 1.5);
     if (fit.where === 'moe-cpu') {
-      score -= 0.5;
+      penalty('Experts in system RAM', 0.5);
       why.push(`Experts kept in system RAM (${fit.cpuMoe ? `llama.cpp --n-cpu-moe ${fit.cpuMoe}` : 'llama.cpp --cpu-moe'}): attention and the context stay on the GPU`);
     }
-    if (fit.where === 'cpu' && b.kind !== 'cpu') score -= 1;
-    if (fit.low) score -= 1.5;
+    if (fit.where === 'cpu' && b.kind !== 'cpu') penalty('Runs on the CPU', 1);
+    if (fit.low) penalty('Very low precision', 1.5);
     // Too slow for the speed the user asked for: push it down (relative to the slider's target).
     if (isLLM && fit.tps != null) {
       const ratio = fit.tps / targetSpeed(s.priority);
-      score -= fit.tps < 3 ? 6 : ratio < 0.35 ? 4 : ratio < 0.6 ? 2 : ratio < 0.85 ? 0.7 : 0;
+      penalty('Slower than the speed you asked for', fit.tps < 3 ? 6 : ratio < 0.35 ? 4 : ratio < 0.6 ? 2 : ratio < 0.85 ? 0.7 : 0);
     }
     if (fit.spec) why.push(`${fit.spec.label}: ≈ ${round1(fit.tps / fit.tpsBase)}× faster generation${fit.spec.experimental ? ' (needs a llama.cpp build with DFlash2)' : ''}`);
     if (kind === 'st' && fit.repo !== m.id) why.push(`Pre-quantized ${fit.quant} build available for your ${b.arch === 'blackwell' && fit.quant === 'NVFP4' ? 'Blackwell GPU (native FP4)' : 'GPU'}`);
-    if (kind === 'gguf' && !m.gguf) { score -= 1.5; why.push('No GGUF build tracked yet: use the search link below'); }
-    if (kind === 'mlx' && !m.mlx) score -= 1;
+    if (kind === 'gguf' && !m.gguf) { penalty('No GGUF build tracked', 1.5); why.push('No GGUF build tracked yet: use the search link below'); }
+    if (kind === 'mlx' && !m.mlx) penalty('No MLX build tracked', 1);
+    const score = parts.reduce((t, [, v]) => t + v, 0);
 
     if (m.dl >= 10000) why.push(`${fmtCompact(m.dl)} downloads last month`);
     else if (m.likes >= 50) why.push(`${m.likes} likes`);
@@ -650,16 +677,16 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (official) why.push('From the original lab');
     if (m.a) why.push(`Mixture of experts: ${m.a}B of ${round1(m.p)}B parameters work per token, so it runs like a ${m.a}B model`);
     else if (has(m, 'moe') && isLLM) why.push('Mixture of experts (active size not published): speed estimated at ~12% active');
-    out.push({ m: { ...m, moe: isMoe }, fit, kind, score, quality, why, rt, specs, ctx, reasoning: has(m, 'reasoning') });
+    out.push({ m, fit, kind, score, parts, quality, why, rt, specs, ctx, reasoning: has(m, 'reasoning') });
   }
 
   out.sort((a, c) => c.score - a.score);
   // At most two near-copies of the same model (e.g. -Instruct and -FP8 uploads).
   const seen = new Map();
   const list = out.filter((r) => {
-    const key = r.m.id.split('/').pop().toLowerCase().replace(/[-_.](instruct|it|chat|gguf|awq|gptq|fp8|int[48]|bf16|nvfp4|mxfp4|mlx|w\d+a\d+|\d+bit|\d+gb)(?=[-_.]|$).*$/, '');
-    seen.set(key, (seen.get(key) || 0) + 1);
-    return seen.get(key) <= 2;
+    const n = (seen.get(r.m.dup) || 0) + 1;
+    seen.set(r.m.dup, n);
+    return n <= 2;
   });
   if (s.sort === 'fast' && isLLM) {
     const pool = list.slice(0, 80);

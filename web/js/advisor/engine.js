@@ -97,6 +97,8 @@ export function serverLadder(arch, m = {}) {
   if (['hopper', 'ada', 'cdna3'].includes(arch)) return [[half, 2.0, 1, null], ['FP8', 1.05, 0.99, 'fp8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
   return [[half, 2.0, 1, null], ['INT8 (W8A16)', 1.05, 0.985, 'int8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
 }
+export const isGptOss = (m) => m.fam === 'GPT-OSS' || /(^|\/)gpt-oss-\d+b$/i.test(m.id || '');
+
 /** Pre-quantized repository for a server format (FP8 can also be applied on the fly to the original weights). */
 export function serverRepo(m, key) {
   if (!key) return { repo: m.id, onTheFly: false };
@@ -198,10 +200,36 @@ export function toolParser(m) {
 /** KV cache (GB) for one sequence of `ctx` tokens at FP16: ~1 GB per 8K tokens for an 8B model, sub-linear in size. */
 export const kvGB = (p, ctx) => (ctx / 8192) * Math.pow(Math.max(p, 0.5) / 8, 0.45);
 
-export function memNeeded(p, bpp, s) {
-  const kv = kvGB(p, s.ctx) * (KV_FACTOR[s.kv] ?? 1) * Math.max(1, s.users);
+/**
+ * Size that drives the KV cache. Dense: the model size. Mixture of experts: attention is shared by all
+ * experts, so the cache grows with the model's width, not its total size; the geometric mean of active
+ * and total parameters tracks real MoE caches (Qwen3-235B-A22B, MiniMax-M2, Mixtral) while erring high.
+ */
+export function kvBasis(m) {
+  if (!m || m.p == null) return m?.p ?? 0;
+  const active = m.a || (m.moe ? m.p * 0.12 : m.p);
+  return active < m.p ? Math.sqrt(active * m.p) : m.p;
+}
+/** KV cache (GB) of one sequence for a model, including its attention type (MLA, hybrid, sliding window). */
+export const kvOf = (m, ctx) => kvGB(kvBasis(m), ctx) * (m?.kvf ?? 1);
+
+export function memNeeded(p, bpp, s, m = null) {
+  const perSeq = m ? kvOf(m, s.ctx) : kvGB(p, s.ctx);
+  const kv = perSeq * (KV_FACTOR[s.kv] ?? 1) * Math.max(1, s.users);
   return { weights: p * bpp, kv, total: p * bpp + kv + 0.5 };
 }
+
+/**
+ * How vLLM / SGLang split a model over n GPUs: tensor parallel needs a power of two that divides the
+ * attention heads, so 3 or 6 cards use pipeline parallel for the rest (6 = TP 2 × PP 3).
+ */
+export function parallelOf(n) {
+  let tp = 1;
+  while (n % (tp * 2) === 0) tp *= 2;
+  return { tp, pp: n / tp };
+}
+/** A cluster of unified-memory machines (two linked DGX Spark) is only usable as one by vLLM / SGLang. */
+export const isCluster = (b) => b.kind === 'unified' && b.n > 1;
 
 /** What the machine offers: fast pool (GPU / unified) and optional slow pool (system RAM). */
 export function budgetOf(s) {
@@ -217,10 +245,12 @@ export function budgetOf(s) {
   if (s.hw === 'unified' || picked?.unified) {
     const u = UNIFIED.find((x) => x.id === (picked?.unified ? picked.id : s.unified)) || UNIFIED[0];
     if (picked?.unified) s = { ...s, nunits: s.ngpu };
-    const n = Math.min(Math.max(1, s.nunits || 1), u.cluster || 1);
-    return { kind: 'unified', arch: u.arch, vendor: u.vendor, arm: !!u.arm, fast: u.usable * n, fastBw: u.bw, slow: 0, slowBw: 0, n,
+    const linked = Math.min(Math.max(1, s.nunits || 1), u.cluster || 1);
+    // Ollama, LM Studio and llama.cpp run on one machine: only vLLM / SGLang can use two linked units.
+    const n = linked > 1 && !['vllm', 'sglang', 'any'].includes(s.runtime) ? 1 : linked;
+    return { kind: 'unified', id: u.id, arch: u.arch, vendor: u.vendor, arm: !!u.arm, fast: u.usable * n, fastBw: u.bw, slow: 0, slowBw: 0, n,
       label: `${n > 1 ? `${n}× ` : ''}${u.name}`,
-      detail: `about ${Math.round(u.usable * n)} GB usable for models, ${u.bw} GB/s${n > 1 ? ' per unit' : ''}, ${ARCH_LABEL[u.arch]}. ${u.note}` };
+      detail: `about ${Math.round(u.usable * n)} GB usable for models, ${u.bw} GB/s${n > 1 ? ' per unit' : ''}, ${ARCH_LABEL[u.arch]}. ${u.note}${linked > n ? ` ${RUNTIMES[s.runtime]?.label || 'This runtime'} runs on one unit: pick vLLM or SGLang to use both.` : ''}` };
   }
   if (s.hw === 'cpu') {
     const usable = Math.max(1, s.ram * 0.7 - 2);
@@ -240,13 +270,16 @@ export function budgetOf(s) {
 function fastBandwidth(b, runtime) {
   // Tensor parallel (vLLM / SGLang): all cards read their slice at once. Ollama / llama.cpp split
   // layers across cards, which take turns, so a single stream gets one card's bandwidth.
-  if (b.n > 1 && ['vllm', 'sglang'].includes(runtime)) return b.fastBw * (1 + (b.n - 1) * 0.6);
+  // Pipeline stages also take turns, so only the tensor-parallel part adds bandwidth.
+  if (b.n > 1 && ['vllm', 'sglang'].includes(runtime)) return b.fastBw * (1 + (parallelOf(b.n).tp - 1) * 0.6);
   return b.fastBw;
 }
 
 /** Estimated tokens per second for one user. */
-export function speedOf(activeP, bpp, s, b, where, runtime) {
-  const kvRead = kvGB(activeP, s.ctx) * (KV_FACTOR[s.kv] ?? 1) * 0.5;
+export function speedOf(activeP, bpp, s, b, where, runtime, kvSeq = null) {
+  // Each new token reads the weights it uses plus the cache filled so far: on average about a third
+  // of the window (conversations and agent runs grow into it), using the same estimate as memory.
+  const kvRead = (kvSeq ?? kvGB(activeP, s.ctx)) * (KV_FACTOR[s.kv] ?? 1) * 0.35;
   const perToken = activeP * bpp + kvRead;
   const eff = b.kind === 'cpu' ? 0.5 : b.kind === 'unified' ? 0.65 : 0.7;
   // Fixed per-token cost (kernel launches, sampling, scheduling) that bandwidth does not cover:
@@ -280,7 +313,8 @@ export function fitModel(m, kind, s, b, runtime) {
   const p = m.p;
   // Unknown-active MoE (tagged "moe" but no "A3B" in the name): assume ~12% of parameters are active.
   const active = m.a || (m.moe ? p * 0.12 : p);
-  const base = kind === 'st' ? serverLadder(b.arch, m) : QUANTS[kind];
+  // gpt-oss ships in MXFP4: its GGUF / MLX builds keep that format, re-quantizing it gains nothing
+  const base = kind === 'st' ? serverLadder(b.arch, m) : isGptOss(m) ? [['MXFP4', 0.55, 1]] : QUANTS[kind];
   const ladder = base.filter(([q]) => !(['F16', 'bf16'].includes(q) && p > 2 && s.priority > 10));
   const options = [];
   for (const [quant, bpp, q, key] of ladder) {
@@ -290,14 +324,14 @@ export function fitModel(m, kind, s, b, runtime) {
       ({ repo, onTheFly } = serverRepo(m, key));
       if (!repo) continue; // no pre-quantized build of this format: skip rather than send people searching
     }
-    const need = memNeeded(p, bpp, s);
+    const need = memNeeded(p, bpp, s, m);
     let where = null;
     if (b.fast && need.total <= b.fast) where = 'gpu';
     else if (b.slow && need.total <= b.fast + b.slow) where = b.fast ? 'split' : 'cpu';
     if (!where) continue;
     const bb = where === 'split' ? { ...b, slowNeed: need.total - b.fast } : b;
     // MoE routing and less regular memory access cost some of the theoretical speed-up.
-    const t = speedOf(active, bpp, s, bb, where, runtime) * (active < p ? 0.7 : 1);
+    const t = speedOf(active, bpp, s, bb, where, runtime, kvOf(m, s.ctx)) * (active < p ? 0.7 : 1);
     options.push({ quant, bpp, qf: q, need, where, low: LOW_QUALITY.has(quant), tps: t, download: p * bpp, repo, onTheFly });
   }
   if (!options.length) return null;
@@ -317,13 +351,13 @@ export function fitModel(m, kind, s, b, runtime) {
 export function refit(r, s2, b, spec) {
   const { m, fit } = r;
   if (fit.tps == null || m.p == null) return { ...fit, spec: null, fits: true };
-  const need = memNeeded(m.p, fit.bpp, s2);
+  const need = memNeeded(m.p, fit.bpp, s2, m);
   const extra = spec ? spec.draftP * 2 * 1.1 + (spec.method === 'mtp' ? need.weights * 0.03 : 0) : 0;
   const total = need.total + extra;
   const pool = fit.where === 'gpu' ? b.fast : b.fast + b.slow;
   const active = m.a || (m.moe ? m.p * 0.12 : m.p);
   const bb = fit.where === 'split' ? { ...b, slowNeed: Math.max(0, total - b.fast) } : b;
-  const base = speedOf(active, fit.bpp, s2, bb, fit.where, r.rt) * (active < m.p ? 0.7 : 1);
+  const base = speedOf(active, fit.bpp, s2, bb, fit.where, r.rt, kvOf(m, s2.ctx)) * (active < m.p ? 0.7 : 1);
   return {
     ...fit,
     spec,
@@ -353,7 +387,9 @@ export function runtimeKinds(s) {
   if (s.runtime !== 'any') return [RUNTIMES[s.runtime].kind];
   if (s.hw === 'mac') return ['mlx', 'gguf'];
   if (s.hw === 'cpu') return ['gguf'];
-  if (s.hw === 'unified') return ['gguf', 'st'];
+  const g = s.hw === 'gpu' ? gpuById(s.gpu) : null;
+  if (g?.unified && s.ngpu > 1) return ['st']; // two linked units: only vLLM / SGLang span both
+  if (g?.id?.startsWith('strix-halo')) return ['gguf']; // vLLM / SGLang ROCm builds do not target this iGPU yet
   return ['gguf', 'st'];
 }
 

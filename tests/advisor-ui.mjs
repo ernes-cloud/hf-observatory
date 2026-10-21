@@ -60,8 +60,20 @@ async function check(page, errors, label) {
 // One random interaction with whatever is visible and enabled.
 let attempt = '';
 async function step(page) {
-  const kind = pick(['preset', 'select', 'select', 'radio', 'radio', 'check', 'range', 'range', 'cfg', 'cfg', 'cfg', 'tab', 'sort', 'more']);
+  const kind = pick(['preset', 'select', 'select', 'radio', 'radio', 'check', 'range', 'range', 'cfg', 'cfg', 'cfg', 'tab', 'sort', 'more', 'fav', 'fav']);
   switch (kind) {
+    case 'fav': {
+      const saves = page.locator('.run-panel:not([hidden]) .fav-save');
+      if (rnd() < 0.4 && await saves.count()) { attempt = 'fav save'; await saves.first().click({ timeout: 5000 }); return attempt; }
+      if (!(await page.isVisible('.fav'))) { if (await page.$('.favs > summary')) { attempt = 'fav panel'; await page.click('.favs > summary', { timeout: 5000 }); return attempt; } return 'no favs'; }
+      const acts = await page.$$eval('.fav [data-fav-act]', (xs) => xs.filter((x) => x.offsetParent).map((x, i) => x.dataset.favAct));
+      if (!acts.length) return 'no fav actions';
+      const act = pick(acts);
+      attempt = `fav ${act}`;
+      if (act === 'save') await page.fill('.fav-text', pick(['services:\n  x:\n    image: a:b\n', 'not yaml "', 'services:\n\tbad: tab\n']));
+      await page.locator(`.fav [data-fav-act="${act}"]:visible`).first().click({ timeout: 5000 });
+      return attempt;
+    }
     case 'preset': {
       const n = await page.$$eval('.preset', (xs) => xs.length);
       const i = Math.floor(rnd() * n);
@@ -164,6 +176,69 @@ for (const [name, viewport, steps] of [['desktop', { width: 1280, height: 900 },
     }
   }
   console.log(`  ${name}: ${steps} random steps, last: ${log.slice(-4).join(' → ')}`);
+  await ctx.close();
+}
+
+// Saved composes: save, rename, edit, survive a reload, reopen with the same settings, export / import, delete.
+{
+  const { ctx, page, errors } = await open({ width: 1280, height: 900 }, '#advisor?u=agents&g=rtx-5090&rt=vllm&c=32768');
+  const first = await page.$eval('#a-results .advice', (x) => x.dataset.id);
+  // customise the first card (port) so reopening must restore it
+  await page.locator('.cfg-toggle').first().click();
+  await page.locator('.cfg [data-k="port"]').fill('9001');
+  await page.locator('.cfg [data-k="port"]').dispatchEvent('change');
+  await page.waitForTimeout(100);
+  await page.locator('.advice').first().locator('.run-panel:not([hidden]) .fav-save').click();
+  const saved = await page.$$eval('.fav', (xs) => xs.length);
+  if (saved !== 1) failures.push(`favourites: ${saved} saved after one click`);
+  await page.locator('.fav-name').fill('My 5090 agent');
+  await page.locator('.fav-name').dispatchEvent('change');
+  await page.click('[data-fav-act="edit"]');
+  const text = await page.inputValue('.fav-text');
+  if (!text.includes('9001')) failures.push('favourites: saved compose lacks the customised port');
+  await page.fill('.fav-text', text.replace('restart: unless-stopped', 'restart: always'));
+  await page.fill('.fav-note', 'prod box');
+  await page.click('[data-fav-act="save"]');
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('#a-results .advice');
+  await page.click('.favs > summary');
+  const after = await page.evaluate(() => ({ name: document.querySelector('.fav-name')?.value, edited: !!document.querySelector('.fav .chip'), yaml: document.querySelector('.fav-preview code')?.textContent || '' }));
+  if (after.name !== 'My 5090 agent' || !after.edited || !after.yaml.includes('restart: always')) failures.push(`favourites after reload: ${JSON.stringify({ ...after, yaml: after.yaml.slice(0, 40) })}`);
+  // change the machine, then reopen: settings, Customize options and the tab come back
+  await page.selectOption('#a-gpu', 'rtx-3060-12-gb');
+  await page.waitForTimeout(150);
+  await page.click('.favs > summary').catch(() => {});
+  if (!(await page.isVisible('[data-fav-act="open"]'))) await page.click('.favs > summary');
+  await page.click('[data-fav-act="open"]');
+  await page.waitForTimeout(300);
+  const reopened = await page.evaluate((id) => ({ gpu: document.querySelector('#a-gpu').value, cfg: !!document.querySelector(`.advice[data-id="${CSS.escape(id)}"] .cfg`), port: document.querySelector(`.advice[data-id="${CSS.escape(id)}"] .cfg [data-k="port"]`)?.value }), first);
+  if (reopened.gpu !== 'rtx-5090' || !reopened.cfg || reopened.port !== '9001') failures.push(`favourites reopen: ${JSON.stringify(reopened)}`);
+  // export, delete (two clicks), import back
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('[data-fav-act="export"]')]);
+  const file = await download.path();
+  await page.click('[data-fav-act="delete"]');
+  await page.click('[data-fav-act="delete"]');
+  if (await page.$$eval('.fav', (xs) => xs.length) !== 0) failures.push('favourites: delete did not remove it');
+  await page.setInputFiles('.fav-import', file);
+  await page.waitForTimeout(200);
+  if (await page.$$eval('.fav', (xs) => xs.length) !== 1) failures.push('favourites: import did not bring it back');
+  await check(page, errors, 'favourites');
+  console.log('  favourites: save → rename → edit → reload → reopen → export → delete → import ok');
+  await ctx.close();
+}
+
+// Nothing fits: the one-click fixes bring results back.
+{
+  const { ctx, page, errors } = await open({ width: 1280, height: 900 }, '#advisor?g=rtx-4060-laptop&lo=22&mu=vision&c=262144');
+  const fixes = await page.$$eval('[data-fix]', (xs) => xs.map((x) => x.textContent));
+  if (!fixes.length) failures.push('empty state: no suggested fixes');
+  else {
+    await page.click('[data-fix="0"]');
+    await page.waitForTimeout(150);
+    if (!(await page.$('#a-results .advice'))) failures.push(`empty state: "${fixes[0]}" did not bring results`);
+  }
+  await check(page, errors, 'empty-state fixes');
+  console.log(`  nothing-fits suggestions: ${fixes.slice(0, 3).join(' | ')}`);
   await ctx.close();
 }
 

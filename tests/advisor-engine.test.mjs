@@ -19,7 +19,9 @@ test('memory budget of a single RTX 4090 and of a DGX Spark', () => {
   const spark = budgetOf({ ...base, hw: 'unified', unified: 'dgx-spark', nunits: 1 });
   assert.equal(spark.fast, 119);
   assert.equal(spark.fastBw, 273);
-  assert.equal(budgetOf({ ...base, hw: 'unified', unified: 'dgx-spark', nunits: 2 }).fast, 238);
+  assert.equal(budgetOf({ ...base, runtime: 'vllm', hw: 'unified', unified: 'dgx-spark', nunits: 2 }).fast, 238);
+  // Ollama cannot span two linked units
+  assert.equal(budgetOf({ ...base, runtime: 'ollama', hw: 'unified', unified: 'dgx-spark', nunits: 2 }).fast, 119);
 });
 
 test('a 70B model fits at Q8 on a DGX Spark but not at all on a single 4090', () => {
@@ -133,4 +135,23 @@ test('tool-call parser per model generation', () => {
   assert.equal(toolParser({ id: 'Qwen/Qwen3-Coder-30B-A3B-Instruct', fam: 'Qwen' }), 'qwen3_coder');
   assert.equal(toolParser({ id: 'Qwen/Qwen2.5-7B-Instruct', fam: 'Qwen' }), 'hermes');
   assert.equal(toolParser({ id: 'meta-llama/Llama-3.1-8B-Instruct', fam: 'Llama' }), 'llama3_json');
+});
+
+test('KV cache follows the architecture: MoE width, MLA, hybrid and sliding-window attention', async () => {
+  const { kvOf } = await import('../web/js/advisor/engine.js');
+  const dense70 = kvOf({ p: 70 }, 131072);
+  // Qwen3-235B-A22B has a smaller cache than a dense 70B (4 KV heads), not 3× bigger
+  assert.ok(kvOf({ p: 235, a: 22 }, 131072) < dense70 * 1.2);
+  // DeepSeek-V3 (MLA): ~9 GB at 128K in practice; the estimate stays within ~2.5×, not the 100+ GB of a dense model
+  const ds = kvOf({ p: 671, a: 37, kvf: 0.3 }, 131072);
+  assert.ok(ds > 8 && ds < 25, `DeepSeek-V3 KV ${ds}`);
+  // Qwen3.5 hybrid (3 linear-attention layers per full one) needs a quarter of the cache
+  assert.equal(kvOf({ p: 27, kvf: 0.25 }, 65536).toFixed(3), (kvOf({ p: 27 }, 65536) * 0.25).toFixed(3));
+});
+
+test('3 or 6 GPUs use pipeline parallel for what tensor parallel cannot split', async () => {
+  const { parallelOf } = await import('../web/js/advisor/engine.js');
+  assert.deepEqual(parallelOf(8), { tp: 8, pp: 1 });
+  assert.deepEqual(parallelOf(6), { tp: 2, pp: 3 });
+  assert.deepEqual(parallelOf(3), { tp: 1, pp: 3 });
 });

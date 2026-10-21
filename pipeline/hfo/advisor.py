@@ -94,6 +94,35 @@ KNOWN_ACTIVE = [
 
 # Size written in the name ("…-35B", "…-1.5B", "…-270M"); not the active size of "A3B" or the expert size of "8x7B".
 NAMED_SIZE_RX = re.compile(r"(?:^|[-_/. ])(\d+(?:\.\d+)?)([bm])(?=$|[-_. ])", re.I)
+# Official GGUF builds the dataset does not track (below its popularity cut-off) but every guide uses.
+CANONICAL_GGUF = {
+    "openai/gpt-oss-120b": "ggml-org/gpt-oss-120b-GGUF",
+    "openai/gpt-oss-20b": "ggml-org/gpt-oss-20b-GGUF",
+}
+
+# Hub "model_type" tags of mixture-of-experts architectures whose names do not say "moe".
+MOE_ARCH_RX = re.compile(r"^(deepseek_v[23]\d*|kimi_k2\d*|glm5\w*|minimax\w*|mixtral|llama4|gpt_oss|qwen3_next|jamba|dbrx|arctic)$")
+
+# KV cache relative to a standard GQA transformer of the same size, by architecture (Hub "model_type" tag):
+# MLA compresses keys/values; hybrid models keep a cache only in their few full-attention layers;
+# sliding-window layers cap their cache at the window. Values are for long contexts and rounded up.
+KV_ARCH = [
+    (0.05, {"mamba", "mamba2"}),
+    (0.15, {"nemotron_h", "granitemoehybrid", "jamba", "kimi_linear"}),
+    (0.25, {"qwen3_next", "qwen3_5", "qwen3_5_moe", "gemma3", "gemma3_text", "gemma3n", "gemma4", "gemma4_text"}),
+    (0.3, {"deepseek_v3", "deepseek_v32", "kimi_k2", "kimi_k25", "glm_moe_dsa", "glm4_moe_lite", "mimo"}),
+    (0.4, {"lfm2", "lfm2_moe"}),
+    (0.5, {"gpt_oss"}),
+]
+
+
+def kv_factor(tags: set[str]) -> float | None:
+    for f, archs in KV_ARCH:
+        if tags & archs:
+            return f
+    return None
+
+
 # CI fixtures and test uploads, not models anyone should run.
 TEST_REPO_RX = re.compile(r"internal-testing|(^|/)(pruna-)?test[-_/]|tiny-random|(^|[-_/])dummy([-_]|$)", re.I)
 
@@ -209,7 +238,7 @@ def build(con) -> dict:
             caps.add("embed")
         if m["task"] == "text-ranking":
             caps.add("rerank")
-        if ACTIVE_RX.search(name) or any("moe" in t for t in tags):
+        if ACTIVE_RX.search(name) or any("moe" in t or MOE_ARCH_RX.match(t) for t in tags):
             caps.add("moe")
         return sum(1 << CAPS.index(c) for c in caps)
 
@@ -228,6 +257,7 @@ def build(con) -> dict:
         st_kids = [k for k in children if "gguf" not in (k["formats"] or []) and "mlx" not in (k["formats"] or [])
                    and not re.search(r"gguf|mlx", k["id"].lower())]
         gguf = m["id"] if "gguf" in fmts else best(m["id"], [k for k in gguf_kids if not is_mtp(k)] or gguf_kids)
+        gguf = CANONICAL_GGUF.get(key, gguf)
         mlx = m["id"] if "mlx" in fmts else best(m["id"], mlx_kids)
         own_scheme = scheme_of(m) if "gguf" not in fmts and "mlx" not in fmts else None
         quants = {own_scheme: m["id"]} if own_scheme else {}
@@ -280,6 +310,7 @@ def build(con) -> dict:
             "mlx": mlx,
             "q": quants or None,
             "mtp": mtp or None,
+            "kvf": kv_factor(tags_l),
             "gmtp": gguf_mtp,
             "dr": [{"id": d["id"], "m": d["method"], "g": d["gguf"], "p": d["p"]} for d in my_drafts[:4]] or None,
             # for re-uploads whose original is not tracked: show what they quantize

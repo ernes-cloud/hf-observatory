@@ -181,3 +181,13 @@ def test_size_from_name_when_hub_count_is_wrong():
     assert size_b({"id": "lab/no-size", "parameters": None}) is None
     assert TEST_REPO_RX.search("trl-internal-testing/tiny-Qwen2ForCausalLM-2.5")
     assert not TEST_REPO_RX.search("Qwen/Qwen3-8B")
+
+
+def test_architecture_tags_drive_kv_factor_and_moe():
+    from hfo.advisor import kv_factor, MOE_ARCH_RX, CANONICAL_GGUF
+    assert kv_factor({"qwen3_5", "text-generation"}) == 0.25
+    assert kv_factor({"deepseek_v3"}) == 0.3
+    assert kv_factor({"gpt_oss"}) == 0.5
+    assert kv_factor({"llama"}) is None
+    assert MOE_ARCH_RX.match("glm5_next") and MOE_ARCH_RX.match("kimi_k25") and not MOE_ARCH_RX.match("qwen3")
+    assert CANONICAL_GGUF["openai/gpt-oss-120b"] == "ggml-org/gpt-oss-120b-GGUF"

@@ -7,12 +7,14 @@ import { dateTime, esc } from './format.js';
 const VIEWS = {
   overview: './views/overview.js',
   finder: './views/finder.js',
+  trends: './views/trends.js',
   families: './views/families.js',
   graveyard: './views/graveyard.js',
+  newsletter: './views/newsletter.js',
   about: './views/about.js',
 };
 const TITLES = {
-  overview: 'Overview', finder: 'Model finder', families: 'Family trees', graveyard: 'Graveyard', about: 'About the data',
+  overview: 'Overview', finder: 'Model finder', trends: 'Trends', families: 'Family trees', graveyard: 'Graveyard', newsletter: 'Newsletter', about: 'About the data',
 };
 
 const rendered = new Map(); // view → module (rendered once, then `update` on param change)

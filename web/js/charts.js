@@ -207,7 +207,7 @@ export function columnChart(data, { series = [{ label: 'Value' }], xFmt = (x) =>
 /**
  * xs: [Date|string], series: [{label, values:[number|null], color?}]
  */
-export function lineChart(xs, series, { height = 260, fmt = compact, xFmt = (x) => x, tipTitle = (x) => x, yLabel = '' } = {}) {
+export function lineChart(xs, series, { height = 260, fmt = compact, xFmt = (x) => x, tipTitle = (x) => x, yLabel = '', time = false, yMax, log = false } = {}) {
   const container = document.createElement('div');
   const legendHtml = series.length > 1
     ? `<ul class="legend">${series.map((s, i) => `<li><span class="swatch line" style="background:${s.color || seriesColor(i)}"></span>${esc(s.label)}</li>`).join('')}</ul>` : '';
@@ -216,23 +216,34 @@ export function lineChart(xs, series, { height = 260, fmt = compact, xFmt = (x) 
     const H = height;
     const svg = el('svg', { class: 'chart', viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': `${yLabel || 'Values'} for ${series.map((s) => s.label).join(', ')}` });
     const all = series.flatMap((s) => s.values).filter((v) => v != null);
-    const ymax = niceMax(Math.max(1, ...all));
+    const ymax = yMax ?? niceMax(Math.max(Number.EPSILON, ...all));
     const iw = W - m.l - m.r, ih = H - m.t - m.b;
-    const x = (i) => m.l + (xs.length === 1 ? iw / 2 : (i / (xs.length - 1)) * iw);
-    const y = (v) => m.t + ih - (v / ymax) * ih;
-    for (let i = 0; i <= 4; i++) {
-      const v = (ymax / 4) * i;
+    // x by index, or proportional to time when snapshots are irregularly spaced
+    const tx = time ? xs.map((d) => Date.parse(d)) : xs.map((_, i) => i);
+    const t0 = tx[0], t1 = tx[tx.length - 1];
+    const x = (i) => m.l + (t1 === t0 ? iw / 2 : ((tx[i] - t0) / (t1 - t0)) * iw);
+    // log scale: one gridline per power of ten between the smallest and largest value
+    const lo = log ? 10 ** Math.floor(Math.log10(Math.max(1, Math.min(...all.filter((v) => v > 0))))) : 0;
+    const hi = log ? 10 ** Math.ceil(Math.log10(Math.max(10, ...all))) : ymax;
+    const y = log
+      ? (v) => m.t + ih - ((Math.log10(Math.max(v, lo)) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))) * ih
+      : (v) => m.t + ih - (v / ymax) * ih;
+    const ticks = log
+      ? Array.from({ length: Math.round(Math.log10(hi / lo)) + 1 }, (_, i) => lo * 10 ** i)
+      : [0, 1, 2, 3, 4].map((i) => (ymax / 4) * i);
+    ticks.forEach((v, i) => {
       el('line', { class: i ? 'gridline' : 'baseline', x1: m.l, x2: W - m.r, y1: y(v), y2: y(v) }, svg);
       const t = el('text', { x: m.l - 6, y: y(v) + 4, 'text-anchor': 'end' }, svg);
       t.textContent = fmt(v);
-    }
-    const tickEvery = Math.ceil(xs.length / Math.max(2, Math.floor(iw / 80)));
-    xs.forEach((d, i) => {
-      if (i % tickEvery && i !== xs.length - 1) return;
-      if (i !== xs.length - 1 && xs.length - 1 - i < tickEvery / 2) return;
-      const t = el('text', { x: x(i), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === xs.length - 1 ? 'end' : 'middle' }, svg);
-      t.textContent = xFmt(d);
     });
+    // x ticks: greedy, at least 80px apart, always including the last point
+    let lastTick = Infinity;
+    for (let i = xs.length - 1; i >= 0; i--) {
+      if (lastTick - x(i) < 80) continue;
+      lastTick = x(i);
+      const t = el('text', { x: x(i), y: H - 6, 'text-anchor': i === xs.length - 1 ? 'end' : x(i) - m.l < 30 ? 'start' : 'middle' }, svg);
+      t.textContent = xFmt(xs[i]);
+    }
     series.forEach((s, k) => {
       let d = '';
       let pen = false;
@@ -251,7 +262,8 @@ export function lineChart(xs, series, { height = 260, fmt = compact, xFmt = (x) 
     hit.addEventListener('mousemove', (e) => {
       const rect = svg.getBoundingClientRect();
       const px = ((e.clientX - rect.left) / rect.width) * W;
-      const i = Math.max(0, Math.min(xs.length - 1, Math.round(((px - m.l) / iw) * (xs.length - 1))));
+      let i = 0;
+      for (let k = 1; k < xs.length; k++) if (Math.abs(x(k) - px) < Math.abs(x(i) - px)) i = k;
       cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i));
       hover.innerHTML = '';
       const rowsHtml = series.map((s, k) => ({ s, k, v: s.values[i] }))

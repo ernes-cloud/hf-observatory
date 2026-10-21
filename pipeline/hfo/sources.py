@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -40,7 +41,7 @@ LATEST_COLUMNS = """
 
 # Columns kept for historical snapshots (trends + newsletter).
 SNAPSHOT_COLUMNS = """
-    id, author, created_at, pipeline_tag, license_family, likes, downloads_30d,
+    id, author, created_at, updated_at, pipeline_tag, license_family, likes, downloads_30d,
     trending_score, parameters, gated, removed, removed_at
 """
 
@@ -75,9 +76,35 @@ def list_versions() -> list[Version]:
     return sorted(v for v in versions if v)
 
 
+# The major version counts days since the dataset started; v61 was Monday
+# 2026-10-19, so majors with (major - 61) % 7 == 0 are Mondays. Weekly
+# snapshots (and newsletter issues) are aligned on them.
+MONDAY_MAJOR = 61
+MONDAY_DATE = date(2026, 10, 19)
+
+
+def version_day(major: int) -> date:
+    return MONDAY_DATE + timedelta(days=major - MONDAY_MAJOR)
+
+
+def snapshot_time(meta: dict) -> str:
+    """Export time of a numbered release.
+
+    Normally the most recent timestamp in the data. Releases rebuilt after a
+    worker outage (v29–v34) all carry the rebuild time instead, so when the data
+    disagrees with the day encoded in the version we trust the version
+    (morning export ≈ 04:00 UTC).
+    """
+    day = version_day(meta["major"])
+    data_ts = datetime.strptime(meta["snapshot_at"], "%Y-%m-%dT%H:%M:%SZ")
+    if abs(data_ts.date() - day) <= timedelta(days=1) and data_ts.date() <= day:
+        return meta["snapshot_at"]
+    return f"{day.isoformat()}T04:00:00Z"
+
+
 def pick_history(versions: list[Version], daily_days: int, max_snapshots: int) -> list[Version]:
     """One version per day (the first export of each day): daily for the most
-    recent ``daily_days`` days, weekly before that, capped at ``max_snapshots``."""
+    recent ``daily_days`` days, Mondays only before that, capped at ``max_snapshots``."""
     first_of_day: dict[int, Version] = {}
     for v in versions:
         first_of_day.setdefault(v.major, v)
@@ -85,7 +112,7 @@ def pick_history(versions: list[Version], daily_days: int, max_snapshots: int) -
     if not majors:
         return []
     newest = majors[-1]
-    picked = [m for m in majors if newest - m < daily_days or (newest - m) % 7 == 0]
+    picked = [m for m in majors if newest - m < daily_days or (m - MONDAY_MAJOR) % 7 == 0]
     return [first_of_day[m] for m in picked[-max_snapshots:]]
 
 
@@ -185,6 +212,7 @@ def build_snapshot(version: Version, cache: Path) -> dict | None:
         )
         meta = {
             "tag": version.tag,
+            "major": version.major,
             "snapshot_at": _snapshot_time(con, "m"),
             "models": con.execute("SELECT count(*) FROM m").fetchone()[0],
         }
@@ -202,6 +230,9 @@ def build_history(cache: Path, daily_days: int, max_snapshots: int) -> list[dict
     for v in pick_history(versions, daily_days, max_snapshots):
         meta = build_snapshot(v, cache)
         if meta:
+            meta["major"] = v.major
+            meta["data_snapshot_at"] = meta["snapshot_at"]
+            meta["snapshot_at"] = snapshot_time(meta)
             meta["path"] = str(cache / "snapshots" / f"{v.tag}.parquet")
             metas.append(meta)
     metas.sort(key=lambda m: m["snapshot_at"])

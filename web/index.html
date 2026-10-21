@@ -8,6 +8,7 @@
   <meta name="color-scheme" content="light dark">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="css/style.css">
+  <link rel="alternate" type="application/rss+xml" title="HF Observatory weekly" href="data/newsletter/feed.xml">
   <script>
     // Apply the saved theme before first paint to avoid a flash.
     try { const t = localStorage.getItem('hfo-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
@@ -30,16 +31,20 @@
     <nav class="wrap tabs" aria-label="Sections">
       <a href="#overview" data-view="overview">Overview</a>
       <a href="#finder" data-view="finder">Model finder</a>
+      <a href="#trends" data-view="trends">Trends</a>
       <a href="#families" data-view="families">Family trees</a>
       <a href="#graveyard" data-view="graveyard">Graveyard</a>
+      <a href="#newsletter" data-view="newsletter">Newsletter</a>
     </nav>
   </header>
 
   <main id="main" class="wrap" tabindex="-1">
     <section id="view-overview" class="view" aria-labelledby="h-overview" hidden></section>
     <section id="view-finder" class="view" aria-labelledby="h-finder" hidden></section>
+    <section id="view-trends" class="view" aria-labelledby="h-trends" hidden></section>
     <section id="view-families" class="view" aria-labelledby="h-families" hidden></section>
     <section id="view-graveyard" class="view" aria-labelledby="h-graveyard" hidden></section>
+    <section id="view-newsletter" class="view" aria-labelledby="h-newsletter" hidden></section>
     <section id="view-about" class="view" aria-labelledby="h-about" hidden></section>
   </main>
 

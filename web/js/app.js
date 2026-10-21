@@ -10,6 +10,7 @@ const VIEWS = {
   home: './views/home.js',
   overview: './views/overview.js',
   finder: './views/finder.js',
+  advisor: './views/advisor.js',
   trends: './views/trends.js',
   families: './views/families.js',
   graveyard: './views/graveyard.js',
@@ -17,7 +18,7 @@ const VIEWS = {
   about: './views/about.js',
 };
 const TITLES = {
-  home: 'Home', overview: 'Overview', finder: 'Model finder', trends: 'Trends', families: 'Family trees', graveyard: 'Graveyard', newsletter: 'Newsletter', about: 'Help & glossary',
+  home: 'Home', overview: 'Overview', finder: 'Model finder', advisor: 'Model advisor', trends: 'Trends', families: 'Family trees', graveyard: 'Graveyard', newsletter: 'Newsletter', about: 'Help & glossary',
 };
 
 let previous = null;

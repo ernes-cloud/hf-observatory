@@ -302,6 +302,33 @@ for (const [name, viewport, steps] of [['desktop', { width: 1280, height: 900 },
   await ctx.close();
 }
 
+// Sprint 4: upgrade advice, GPU detection, measured speeds, electricity cost.
+{
+  const { ctx, page, errors } = await open({ width: 1280, height: 900 }, '#advisor?g=rtx-4060&rt=ollama');
+  await page.click('#a-upgrade');
+  await page.waitForFunction(() => { const t = document.querySelector('#a-upgrade-out')?.textContent || ''; return t && !/Comparing machines/.test(t); }, null, { timeout: 15000 });
+  const rows = await page.$$eval('#a-upgrade-out tbody tr', (xs) => xs.length);
+  if (!rows) failures.push('upgrade advice: no machine suggested for an RTX 4060');
+  else {
+    await page.locator('[data-try-gpu]').first().click();
+    await page.waitForTimeout(200);
+    const gpu = await page.$eval('#a-gpu', (x) => x.value);
+    if (gpu === 'rtx-4060') failures.push('upgrade advice: "Try it" did not switch the machine');
+  }
+  await page.click('#a-detect');
+  await page.waitForFunction(() => document.querySelector('#a-detect-out').textContent && !/Asking/.test(document.querySelector('#a-detect-out').textContent), null, { timeout: 10000 });
+  const cost = await page.$eval('.advice .cost', (x) => x.textContent).catch(() => '');
+  if (!/electricity per million tokens/.test(cost)) failures.push(`electricity cost missing on cards: "${cost}"`);
+  await check(page, errors, 'sprint 4');
+  const spark = await open({ width: 1280, height: 900 }, '#advisor?g=dgx-spark&rt=llamacpp&u=reasoning&lo=19');
+  const measured = await spark.page.$$eval('.measured', (xs) => xs.map((x) => x.textContent));
+  if (!measured.some((t) => /Measured here: \d+/.test(t))) failures.push('measured speed not shown for gpt-oss on a DGX Spark');
+  await check(spark.page, spark.errors, 'measured');
+  await spark.ctx.close();
+  console.log(`  upgrade advice (${rows} rows), GPU detection, electricity cost, measured speeds ok`);
+  await ctx.close();
+}
+
 // Old shared links (unified machines had their own switch) still open the right machine.
 {
   const { ctx, page, errors } = await open({ width: 1280, height: 900 }, '#advisor?hw=unified&uf=dgx-spark&nu=2&rt=vllm');

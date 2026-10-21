@@ -5,7 +5,7 @@ import { pageHeader } from '../ui.js';
 import { CPU_MEMORY, GPUS, MAC_CHIPS, PRESETS, RAM_SIZES, UNIFIED, UNIFIED_GROUPS, allGpus, gpuById } from '../advisor/hardware.js';
 import {
   AGENT_KINDS, CTX_STOPS, LLM_USES, RUNTIMES, SIZE_STOPS, USER_STOPS, USES,
-  agentKind, capacity, memNeeded, recommend, refit, runtimeKinds, speedLabel, thinkingOf,
+  agentKind, capacity, energyPerMillion, finetuneCapacity, memNeeded, recommend, refit, runtimeKinds, speedLabel, thinkingOf, upgradeOptions,
 } from '../advisor/engine.js';
 import { commandsFor, defaultOptions, defaultSpecTokens } from '../advisor/commands.js';
 import { addFavorite, exportFavorites, importFavorites, isEdited, lintCompose, loadFavorites, packFavorite, persistent, removeFavorite, unpackFavorite, updateFavorite } from '../advisor/favorites.js';
@@ -21,12 +21,12 @@ const DEFAULT = {
   hw: 'gpu', gpu: 'rtx-4090', customVram: 16, customBw: 500, ngpu: 1, gpu2: '', ngpu2: 1, chip: 'm4-max', mac: 64, unified: 'dgx-spark', nunits: 1,
   ram: 32, cpuMem: 'ddr5', offload: false,
   runtime: 'ollama', ctx: 8192, users: 1, kv: 'f16', spec: 'auto', think: 'default',
-  sizeLo: 0, sizeHi: SIZE_STOPS.length - 1, priority: 40, archFilter: 'any', must: '',
+  sizeLo: 0, sizeHi: SIZE_STOPS.length - 1, priority: 40, archFilter: 'any', must: '', kwh: 0.2,
   lang: '', commercial: false, hideGated: false, uncensored: false, officialOnly: false, sort: 'best',
 };
 // short URL keys so a configuration can be shared
 const KEYS = { use: 'u', agent: 'ag', ragPart: 'rp', hw: 'hw', gpu: 'g', customVram: 'cv', customBw: 'cb', ngpu: 'n', gpu2: 'g2', ngpu2: 'n2', chip: 'ch', mac: 'mm', unified: 'uf', nunits: 'nu',
-  ram: 'r', cpuMem: 'cm', offload: 'of', runtime: 'rt', ctx: 'c', users: 'us', kv: 'kv', spec: 'sp', think: 'th', sizeLo: 'lo', sizeHi: 'hi', priority: 'pr', archFilter: 'af', must: 'mu', lang: 'l',
+  ram: 'r', cpuMem: 'cm', offload: 'of', runtime: 'rt', ctx: 'c', users: 'us', kv: 'kv', spec: 'sp', think: 'th', sizeLo: 'lo', sizeHi: 'hi', priority: 'pr', archFilter: 'af', must: 'mu', kwh: 'kw', lang: 'l',
   commercial: 'co', hideGated: 'hg', uncensored: 'un', officialOnly: 'oo', sort: 's' };
 
 let A = null;
@@ -106,6 +106,7 @@ function sanitize(input) {
   if (s.sizeLo > s.sizeHi) [s.sizeLo, s.sizeHi] = [s.sizeHi, s.sizeLo];
   s.priority = num(Math.round(s.priority / 10) * 10, 0, 100, DEFAULT.priority);
   s.archFilter = oneOf(s.archFilter, ['any', 'dense', 'moe'], 'any');
+  s.kwh = Math.round(num(s.kwh, 0.01, 2, 0.2) * 100) / 100;
   s.must = String(s.must || '').split(',').filter((x) => MUST.some(([k]) => k === x)).join(',');
   s.lang = oneOf(s.lang, ['', ...LANGS], '');
   s.sort = oneOf(s.sort, ['best', 'quality', 'fast'], 'best');
@@ -178,6 +179,7 @@ function formHtml() {
         <div class="field" data-hw="ram"><label for="a-cm">RAM type</label>
           <select id="a-cm" name="cpuMem">${CPU_MEMORY.map((c) => option(c.id, c.name, state.cpuMem)).join('')}</select></div>
       </div>
+      <div class="detect-row"><button type="button" class="btn" id="a-detect">Detect my GPU</button><span class="note" id="a-detect-out" role="status"></span></div>
       <p class="note hw-note" id="hw-note"></p>
       <label class="inline-check" data-hw="offload"><input type="checkbox" name="offload"> Let big models overflow into system RAM (Ollama / llama.cpp). Bigger models, much slower.</label>
     </fieldset>
@@ -239,6 +241,8 @@ function formHtml() {
         <div class="checks">${MUST.map(([k, l]) => `<label class="chip-toggle"><input type="checkbox" name="must" value="${k}">${esc(l)}</label>`).join('')}</div>
       </div>
       <div class="filters">
+        <div class="field" data-llm><label for="a-kwh">Electricity price ($ per kWh)</label>
+          <input type="number" id="a-kwh" name="kwh" min="0.01" max="2" step="0.01" inputmode="decimal"></div>
         <div class="field"><label for="a-lang">Language</label>
           <select id="a-lang" name="lang">${option('', 'Any', state.lang)}${LANGS.map((l) => option(l, language(l), state.lang)).join('')}</select></div>
       </div>
@@ -280,7 +284,7 @@ function syncForm() {
   f.ctxIdx.value = String(Math.max(0, CTX_STOPS.indexOf(state.ctx)));
   f.usersIdx.value = String(Math.max(0, USER_STOPS.indexOf(state.users)));
   f.sizeLo.value = String(state.sizeLo); f.sizeHi.value = String(state.sizeHi); f.priority.value = String(state.priority);
-  f.lang.value = state.lang; f.commercial.checked = state.commercial; f.officialOnly.checked = state.officialOnly;
+  f.lang.value = state.lang; f.kwh.value = String(state.kwh); f.commercial.checked = state.commercial; f.officialOnly.checked = state.officialOnly;
   f.hideGated.checked = state.hideGated; f.uncensored.checked = state.uncensored;
   decorate();
 }
@@ -299,7 +303,7 @@ function readForm(changed) {
     ram: +f.ram.value, cpuMem: f.cpuMem.value, offload: f.offload.checked, runtime: f.runtime.value, kv: f.kv.value, spec: f.spec.value, think: f.think.value,
     archFilter: val('archFilter') || 'any', must: [...f.querySelectorAll('input[name="must"]:checked')].map((x) => x.value).join(','),
     ctx: CTX_STOPS[+f.ctxIdx.value], users: USER_STOPS[+f.usersIdx.value], sizeLo: lo, sizeHi: hi, priority: +f.priority.value,
-    lang: f.lang.value, commercial: f.commercial.checked, officialOnly: f.officialOnly.checked, hideGated: f.hideGated.checked, uncensored: f.uncensored.checked,
+    kwh: parseFloat(f.kwh.value) || 0.2, lang: f.lang.value, commercial: f.commercial.checked, officialOnly: f.officialOnly.checked, hideGated: f.hideGated.checked, uncensored: f.uncensored.checked,
   };
   // Picking an agent type sets a sensible context for it (still adjustable).
   if (state.use === 'agents' && (prevUse !== 'agents' || prevAgent !== state.agent) && (changed === 'use' || changed === 'agent')) {
@@ -469,6 +473,7 @@ function resultCard(r, i) {
     : `<span class="metric-label">Speed (estimate) ${help('tps')}</span>
         <span class="metric-value">${tps(fit.tps)} <small>tokens/s</small></span>
         <span class="metric-sub">≈ ${int(Math.round(fit.tps * 0.75 * 60))} words per minute${fit.spec ? ` · ${tps(fit.tpsBase)} without ${esc(fit.spec.label)}` : ''}</span>`}
+        ${measuredHtml(m)}
         ${fit.pp ? `<span class="metric-sub" title="Time to first token: reading the prompt is limited by compute (TFLOPS), not memory bandwidth">${ttftText(fit.pp, +o.ctx)}</span>` : ''}
         <span class="metric-status">${sp[1]}</span>
       </div>` : ''}
@@ -476,6 +481,7 @@ function resultCard(r, i) {
         <span class="metric-label">Download</span>
         <span class="metric-value">${fit.download ? `≈ ${gb(fit.download)}` : '–'}</span>
         <span class="metric-sub">${compact(m.dl)} downloads/month · ${int(m.likes)} likes</span>
+        ${isLLM ? costHtml(m, fit, b, +o.users) : ''}
       </div>
     </div>
     ${fit.low ? '<p class="note warn-note">This quantization loses noticeable quality; a smaller model at higher precision may answer better.</p>' : ''}
@@ -486,6 +492,22 @@ function resultCard(r, i) {
     ${r.why.length ? `<ul class="why">${r.why.slice(0, 5).map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
     ${r.parts ? scoreHtml(r, i) : ''}
   </article>`;
+}
+
+/** A published or community measurement of this model on this exact machine, when one exists. */
+function measuredHtml(m) {
+  const hw = state.hw === 'mac' ? state.chip : state.gpu;
+  const r = (m.meas || []).find((x) => x.hw === hw);
+  if (!r) return '';
+  return `<span class="metric-sub measured">Measured here: ${tps(r.tg)} tokens/s${r.pp ? ` · prompt ${int(Math.round(r.pp))} tokens/s` : ''} <span class="muted">(${esc(r.rt)}${r.q ? ` ${esc(r.q)}` : ''}, <a href="${esc(r.src)}" rel="noopener">source</a>)</span></span>`;
+}
+
+/** Running cost here (electricity) next to what the same model costs through an API, per million tokens. */
+function costHtml(m, fit, b, users) {
+  const e = energyPerMillion(fit, b, users, state.kwh);
+  if (e == null && !m.api) return '';
+  const money = (x) => (x < 0.01 ? '<$0.01' : x < 10 ? `$${x.toFixed(2)}` : `$${Math.round(x)}`);
+  return `<span class="metric-sub cost" title="Electricity at $${state.kwh}/kWh (change it in More settings): the machine's power while generating. The API price is OpenRouter's for this exact model, output tokens.">${e != null ? `≈ ${money(e)} of electricity per million tokens` : ''}${m.api ? `${e != null ? ' · ' : ''}API: ${money(m.api)} per million output tokens` : ''}</span>`;
 }
 
 /** One run tab: the code with Copy / Download / Save, and its note. Copy and Download read the code from the page. */
@@ -558,8 +580,33 @@ function summaryHtml(b) {
     <div><p class="eyebrow">Your setup</p><p class="budget-main">${esc(b.label)}</p><p class="note">${esc(b.detail)}</p>
       ${isLLM && b.kind !== 'mac' && b.kind !== 'cpu' && ['vllm', 'sglang', 'any'].includes(s.runtime) ? `<p class="note"><strong>Best GPU-server formats here:</strong> ${b.arch === 'blackwell' ? 'NVFP4 (native FP4 tensor cores) and FP8' : ['hopper', 'ada', 'cdna3', 'cdna4'].includes(b.arch) ? 'FP8 (native), AWQ / GPTQ for 4-bit' : 'INT8 and AWQ / GPTQ 4-bit (no FP8 hardware)'}${b.arch === 'blackwell' ? '; MXFP4 for gpt-oss' : ''}.</p>` : ''}</div>
     ${isLLM ? `<div><p class="eyebrow">Biggest model that fits ${b.fast ? 'fully in fast memory' : ''} · ${ctxLabel(s.ctx)} context${s.users > 1 ? ` × ${s.users} users` : ''}</p>
-      <ul class="cap-list">${cap.map(([n, p]) => `<li><span>${esc(n)}</span><strong>${p >= 1 ? `≈ ${p >= 10 ? Math.round(p) : p.toFixed(1)}B` : '< 1B'}</strong></li>`).join('')}</ul></div>` : ''}
-  </div>`;
+      <ul class="cap-list">${cap.map(([n, p]) => `<li><span>${esc(n)}</span><strong>${p >= 1 ? `≈ ${p >= 10 ? Math.round(p) : p.toFixed(1)}B` : '< 1B'}</strong></li>`).join('')}</ul>
+      ${finetuneHtml(b)}</div>` : ''}
+  </div>
+  ${isLLM ? `<div class="upgrade">
+    <button type="button" class="btn" id="a-upgrade" aria-expanded="false">What would a better machine run?</button>
+    <div id="a-upgrade-out" hidden></div>
+  </div>` : ''}`;
+}
+
+/** Biggest model this machine can fine-tune (Unsloth-style estimates). */
+function finetuneHtml(b) {
+  const ft = finetuneCapacity(b);
+  if (!ft || b.kind === 'cpu') return '';
+  const size = (p) => (p >= 1 ? `≈ ${p >= 10 ? Math.round(p) : p.toFixed(1)}B` : '< 1B');
+  return `<p class="note finetune" title="Short sequences, batch 1–2, with Unsloth-style memory savings; longer sequences need more">Fine-tuning here: QLoRA up to <strong>${size(ft.qlora)}</strong> · LoRA <strong>${size(ft.lora)}</strong> · full <strong>${size(ft.full)}</strong></p>`;
+}
+
+/** The machines that would run a better model for the same job, cheapest first (launch prices). */
+function upgradeHtml(rows) {
+  if (!rows.length) return '<p class="note">No single card or unified-memory machine with a launch price runs a clearly better model for these settings.</p>';
+  return `<div class="table-wrap"><table class="upgrade-table">
+    <thead><tr><th scope="col">Machine</th><th scope="col">Launch price</th><th scope="col">Best model there</th><th scope="col">Speed</th><th></th></tr></thead>
+    <tbody>${rows.map((r) => `<tr><th scope="row">${esc(r.gpu.name)} <span class="muted">· ${Math.round(r.gpu.mem)} GB</span></th><td>$${int(r.price)}</td>
+      <td><a href="${esc(hfUrl(r.top.m.id))}" rel="noopener">${esc(r.top.m.id.split('/').pop())}</a> <span class="muted">${esc(r.top.fit.quant)}</span></td>
+      <td>${tps(r.top.fit.tps)} tok/s</td><td><button type="button" class="btn" data-try-gpu="${esc(r.gpu.id)}">Try it</button></td></tr>`).join('')}</tbody>
+  </table></div>
+  <p class="note">Each step up is the cheapest machine (US launch price) that runs a clearly better model for the same job and settings. Used cards and street prices vary.</p>`;
 }
 
 function agentTipsHtml() {
@@ -849,6 +896,29 @@ async function onFavClick(e) {
   }
 }
 
+/* --------------------------------------------------------------- GPU detection */
+
+// WebGPU adapter architecture → the GPU list group to suggest (browsers rarely expose the exact model)
+const ARCH_GROUP = { blackwell: 'RTX 50', lovelace: 'RTX 40', ada: 'RTX 40', ampere: 'RTX 30', turing: 'RTX 30 / 20', 'rdna-4': 'AMD', 'rdna-3': 'AMD', 'rdna-2': 'AMD' };
+
+/** Ask the browser's WebGPU adapter what GPU this is; nothing leaves the page. */
+async function detectGpu() {
+  if (!navigator.gpu) return { msg: 'This browser does not expose WebGPU, so pick your card from the list.' };
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    const info = adapter?.info || (await adapter?.requestAdapterInfo?.()) || {};
+    const vendor = (info.vendor || '').toLowerCase();
+    const desc = (info.description || info.device || '').toLowerCase();
+    if (vendor === 'apple' || /apple/.test(desc)) return { mac: true, msg: 'Apple Silicon detected: pick your chip and memory.' };
+    // an exact name (some browsers give it), else the architecture family
+    const exact = allGpus().filter((g) => !g.unified).find((g) => desc && desc.includes(g.name.toLowerCase()));
+    if (exact) return { gpu: exact.id, msg: `Detected ${exact.name}.` };
+    const arch = (info.architecture || '').toLowerCase();
+    const label = [vendor && vendor[0].toUpperCase() + vendor.slice(1), arch].filter(Boolean).join(' ');
+    return { msg: label ? `Detected an ${label} GPU (${ARCH_GROUP[arch] ? `${ARCH_GROUP[arch]} series` : 'model not shared by the browser'}): pick the exact card below.` : 'The browser did not share the GPU model: pick it from the list.' };
+  } catch { return { msg: 'GPU detection failed: pick your card from the list.' }; }
+}
+
 /* --------------------------------------------------------------- render */
 
 export async function render(section, params) {
@@ -952,6 +1022,14 @@ export async function render(section, params) {
     refresh();
   });
   section.querySelector('#a-more-btn').addEventListener('click', () => { shown += PAGE; refresh(false); });
+  section.querySelector('#a-detect').addEventListener('click', async () => {
+    const out = section.querySelector('#a-detect-out');
+    out.textContent = 'Asking the browser…';
+    const d = await detectGpu();
+    out.textContent = d.msg;
+    if (d.gpu) { state = sanitize({ ...state, hw: 'gpu', gpu: d.gpu, ngpu: 1, gpu2: '' }); syncForm(); refresh(); }
+    else if (d.mac) { state = sanitize({ ...state, hw: 'mac', runtime: state.runtime === 'vllm' || state.runtime === 'sglang' ? 'mlx' : state.runtime }); syncForm(); refresh(); }
+  });
   section.querySelector('#a-reset').addEventListener('click', () => { state = sanitize({ ...DEFAULT }); compare.clear(); syncForm(); refresh(); });
   section.querySelector('#a-share').addEventListener('click', async () => {
     const out = section.querySelector('#a-shared');
@@ -975,6 +1053,20 @@ export async function render(section, params) {
       return;
     }
     if (e.target.closest('#a-favs')) { onFavClick(e); return; }
+    const up = e.target.closest('#a-upgrade');
+    if (up) {
+      const out = section.querySelector('#a-upgrade-out');
+      const open = up.getAttribute('aria-expanded') !== 'true';
+      up.setAttribute('aria-expanded', String(open));
+      out.hidden = !open;
+      if (open) {
+        out.innerHTML = '<p class="note">Comparing machines…</p>';
+        setTimeout(() => { out.innerHTML = upgradeHtml(upgradeOptions(A, state, els.lastList?.[0], allGpus())); }, 30);
+      }
+      return;
+    }
+    const tryGpu = e.target.closest('[data-try-gpu]');
+    if (tryGpu) { state = sanitize({ ...state, hw: 'gpu', gpu: tryGpu.dataset.tryGpu, ngpu: 1, gpu2: '' }); syncForm(); refresh(); els.results.scrollIntoView({ block: 'start' }); return; }
     const fix = e.target.closest('[data-fix]');
     if (fix) { state = sanitize({ ...state, ...els.fixes[+fix.dataset.fix] }); syncForm(); refresh(); return; }
     const save = e.target.closest('.fav-save');

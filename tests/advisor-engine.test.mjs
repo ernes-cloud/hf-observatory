@@ -312,3 +312,24 @@ test('sprint 2: the ranking prefers usable, trustworthy, current models', async 
   const tight = { ...base, gpu: 'rtx-4060', runtime: 'ollama', ctx: 8192, priority: 40 };
   assert.equal(fitModel({ id: 'x/Dense-27B', p: 27, gguf: 'x/y' }, 'gguf', tight, budgetOf(tight), 'ollama'), null);
 });
+
+test('sprint 4: electricity per million tokens, upgrade advice and fine-tuning capacity', async () => {
+  const { budgetOf, energyPerMillion, finetuneCapacity, upgradeOptions, recommend } = await import('../web/js/advisor/engine.js');
+  const { allGpus } = await import('../web/js/advisor/hardware.js');
+  // RTX 4090 at 100 tok/s: (450 W × 0.8 + 60 W) for 10,000 s ≈ 1.17 kWh ≈ $0.23 at $0.20/kWh
+  const b = budgetOf({ ...base, gpu: 'rtx-4090' });
+  assert.equal(energyPerMillion({ tps: 100 }, b, 1, 0.2).toFixed(2), '0.23');
+  assert.ok(energyPerMillion({ tps: 100 }, b, 8, 0.2) < energyPerMillion({ tps: 100 }, b, 1, 0.2) / 7);
+  // Unsloth's published minimums: 8B needs ~6 GB with QLoRA, ~22 GB with LoRA
+  const ft = finetuneCapacity({ fast: 22 });
+  assert.ok(ft.qlora > 30 && ft.lora > 7 && ft.lora < 9 && ft.full < 2);
+  // upgrades: cheaper first, each runs a better model than the one before
+  const data = { caps: ['chat', 'tools', 'code', 'reasoning', 'vision', 'roleplay', 'uncensored', 'moe'], tool_families: [], models: [8, 14, 32, 70].map((p) => (
+    { id: `lab/M-${p}B`, task: 'text-generation', p, a: null, lf: 'oss', lang: [], dl: 90000, likes: 900, tr: 1, c: 20700, caps: 1, st: true, gguf: `lab/M-${p}B-GGUF` })) };
+  const s = { ...base, gpu: 'rtx-4060', runtime: 'ollama', ctx: 8192, must: '', archFilter: 'any', spec: 'auto' };
+  const cur = recommend(data, s, 20750).list[0];
+  const ups = upgradeOptions(data, s, cur, allGpus());
+  assert.ok(ups.length >= 2);
+  for (let i = 1; i < ups.length; i++) assert.ok(ups[i].price >= ups[i - 1].price && ups[i].top.m.p >= ups[i - 1].top.m.p);
+  assert.ok(ups[0].top.m.p > cur.m.p);
+});

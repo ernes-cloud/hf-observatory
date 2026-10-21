@@ -265,3 +265,22 @@ def test_quants_in_names_and_research_sweeps():
     assert RESEARCH_RX.search("qwen3-4b-medicine-static-pilot-261016-step-022")
     assert not RESEARCH_RX.search("Llama-3.1-8B-Instruct")
     assert OTHER_FORMAT_RX.search("-nvfp4") and not OTHER_FORMAT_RX.search("-q4_k_m-gguf")
+
+
+def test_externals_parsers():
+    from hfo.externals import api_prices, recipe_links, parse_benchmark_issue
+    prices = api_prices([
+        {"id": "qwen/qwen3-32b", "hugging_face_id": "Qwen/Qwen3-32B", "pricing": {"completion": "0.0000003"}},
+        {"id": "qwen/qwen3-32b:free", "hugging_face_id": "Qwen/Qwen3-32B", "pricing": {"completion": "0"}},
+        {"id": "other/x", "hugging_face_id": "", "pricing": {"completion": "0.000001"}},
+    ])
+    assert prices == {"qwen/qwen3-32b": 0.3}
+    tree = [{"type": "blob", "path": "Qwen/Qwen3-Next.md"}, {"type": "blob", "path": "Qwen/Qwen3.md"}, {"type": "tree", "path": "Qwen"}]
+    links = recipe_links(tree, ["Qwen/Qwen3-Next-80B-A3B-Instruct", "Qwen/Qwen3-8B", "someone/Qwen3-8B"])
+    assert links["Qwen/Qwen3-Next-80B-A3B-Instruct"].endswith("Qwen/Qwen3-Next.md")
+    assert links["Qwen/Qwen3-8B"].endswith("Qwen/Qwen3.md") and "someone/Qwen3-8B" not in links
+    body = ("### Model (Hugging Face id)\n\nQwen/Qwen3-30B-A3B\n\n### Hardware id\n\nrtx-4090\n\n### Runtime\n\nllama.cpp\n\n"
+            "### Quantization\n\nQ4_K_M\n\n### Generation speed (tokens/s)\n\n150.5\n\n### Prompt processing speed (tokens/s)\n\n_No response_\n")
+    row = parse_benchmark_issue({"body": body, "html_url": "https://github.com/x/y/issues/1"})
+    assert row == {"model": "Qwen/Qwen3-30B-A3B", "hw": "rtx-4090", "rt": "llamacpp", "q": "Q4_K_M", "tg": 150.5, "src": "https://github.com/x/y/issues/1"}
+    assert parse_benchmark_issue({"body": "### Model (Hugging Face id)\n\nnot a model\n"}) is None

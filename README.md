@@ -202,6 +202,14 @@ npm run screenshots                       # refresh docs/screenshots/
   users it leads with total throughput, and speculative decoding stays off above 4 users unless chosen per card.
   Run tabs follow the ARIA tabs pattern (arrow keys, Home, End); long files fold to 360 px. The saved-composes
   panel appears with the first save. When nothing fits, the page says why in numbers and offers one-click fixes.
+* **Cost, upgrades, fine-tuning, measured speeds**: the summary shows the machine's electricity cost per million
+  tokens at your price per kWh (step 4) next to the cheapest API price for the same model (OpenRouter's public
+  list, matched by Hugging Face id); "What should I buy?" compares machines with more memory (3 cheapest per size)
+  and lists those that unlock a better model, with price and the model it gets you; a fine-tuning line says the
+  largest model you can train with QLoRA, LoRA or full fine-tuning; "Detect my GPU" asks the browser (WebGPU)
+  for your adapter. Cards link the tested vLLM recipe for the model family when one exists and show **measured
+  speeds**: published llama.cpp results plus results submitted through the "Benchmark result" issue form once a
+  maintainer labels them `benchmark-accepted` (`pipeline/hfo/externals.py` fetches and caches all three sources).
 * Without config data, the advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
   ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size; for mixture-of-experts models with the
   geometric mean of active and total parameters, and scaled by the attention type read from the Hub

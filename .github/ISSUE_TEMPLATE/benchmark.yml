@@ -1,0 +1,56 @@
+name: Benchmark result
+description: Share a measured speed so the advisor can show real numbers next to its estimates.
+title: "[benchmark] <model> on <hardware>"
+labels: ["benchmark"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! A maintainer checks each result and adds the `benchmark-accepted` label; the next daily build
+        then shows it on the advisor cards. Please measure with `llama-bench` (llama.cpp), `ollama run --verbose`,
+        `vllm bench serve` or similar, with one user and a short prompt unless you say otherwise.
+  - type: input
+    id: model
+    attributes:
+      label: Model (Hugging Face id)
+      placeholder: Qwen/Qwen3-30B-A3B
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware id
+      description: As in the advisor's link (the g= value, e.g. rtx-4090, dgx-spark, strix-halo-128) or the Mac chip (m4-max).
+      placeholder: rtx-4090
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options: [llama.cpp, Ollama, LM Studio, vLLM, SGLang, MLX]
+    validations:
+      required: true
+  - type: input
+    id: quant
+    attributes:
+      label: Quantization
+      placeholder: Q4_K_M, FP8, NVFP4, 4-bit…
+  - type: input
+    id: tg
+    attributes:
+      label: Generation speed (tokens/s)
+      placeholder: "62.4"
+    validations:
+      required: true
+  - type: input
+    id: pp
+    attributes:
+      label: Prompt processing speed (tokens/s)
+      placeholder: "2900"
+  - type: textarea
+    id: details
+    attributes:
+      label: Command and output
+      description: The exact command and its output, so others can reproduce it.
+      render: shell

@@ -102,8 +102,8 @@ export const PRESETS = [
   { label: 'RTX 4090 workstation', state: { hw: 'gpu', gpu: 'rtx-4090', ngpu: 1, ram: 64, cpuMem: 'ddr5' } },
   { label: 'RTX 5090', state: { hw: 'gpu', gpu: 'rtx-5090', ngpu: 1, ram: 64, cpuMem: 'ddr5' } },
   { label: '2× RTX 3090 rig', state: { hw: 'gpu', gpu: 'rtx-3090', ngpu: 2, ram: 64, cpuMem: 'ddr4' } },
-  { label: 'NVIDIA DGX Spark', state: { hw: 'unified', unified: 'dgx-spark', nunits: 1 } },
-  { label: 'Ryzen AI Max+ 395 128 GB', state: { hw: 'unified', unified: 'strix-halo-128', nunits: 1 } },
+  { label: 'NVIDIA DGX Spark', state: { hw: 'gpu', gpu: 'dgx-spark', ngpu: 1, runtime: 'vllm' } },
+  { label: 'Ryzen AI Max+ 395 128 GB', state: { hw: 'gpu', gpu: 'strix-halo-128', ngpu: 1 } },
   { label: 'MacBook Air M4 · 16 GB', state: { hw: 'mac', chip: 'm4', mac: 16 } },
   { label: 'MacBook Pro M4 Max · 64 GB', state: { hw: 'mac', chip: 'm4-max', mac: 64 } },
   { label: 'Mac Studio M3 Ultra · 512 GB', state: { hw: 'mac', chip: 'm3-ultra', mac: 512 } },
@@ -111,5 +111,11 @@ export const PRESETS = [
   { label: '8× H100 server', state: { hw: 'gpu', gpu: 'h100-sxm', ngpu: 8, ram: 1024, cpuMem: 'server', runtime: 'vllm' } },
 ];
 
-export const allGpus = () => GPUS.flatMap((g) => g.items);
+/** Unified-memory machines also appear in the graphics-card list (they are a GPU with a big shared pool). */
+export const UNIFIED_GROUPS = [
+  { group: 'NVIDIA DGX & Jetson · unified memory', items: UNIFIED.filter((u) => u.vendor === 'nvidia') },
+  { group: 'AMD Ryzen AI Max · unified memory', items: UNIFIED.filter((u) => u.vendor === 'amd') },
+].map((g) => ({ ...g, items: g.items.map((u) => ({ ...u, unified: true, mem: u.usable })) }));
+
+export const allGpus = () => [...UNIFIED_GROUPS, ...GPUS].flatMap((g) => g.items);
 export const gpuById = (id) => allGpus().find((g) => g.id === id);

@@ -550,3 +550,26 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 8px 0 2p
 .repo-line { margin: 0; font-size: .8rem; color: var(--ink-2); overflow-wrap: anywhere; }
 .repo-line code { font-size: .78rem; }
 .repo-line .muted { color: var(--muted); }
+
+/* ---------- Advisor: per-model Customize panel ---------- */
+.sub-block { min-width: 0; }
+.advice-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.code-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; align-self: flex-start; }
+.code-actions .btn { text-align: center; text-decoration: none; }
+@media (max-width: 520px) {
+  .code-row { flex-direction: column; }
+  .code-actions { flex-direction: row; align-self: flex-end; }
+}
+.cfg { margin: 10px 0 12px; padding: 12px; border: 1px solid var(--grid); border-radius: 8px; background: var(--surface-2); min-width: 0; }
+.cfg-grid { display: grid; gap: 10px 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr)); align-items: start; }
+.cfg-field { display: grid; gap: 4px; font-size: .82rem; min-width: 0; }
+.cfg-field > span { font-weight: 600; color: var(--ink-2); }
+.cfg-field select, .cfg-field input[type="text"], .cfg-field input[type="number"] { width: 100%; min-width: 0; font: inherit; padding: 5px 7px; border: 1px solid var(--grid); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.cfg-field input[type="range"] { margin: 2px 0; }
+.cfg-field small, .cfg-check small { color: var(--muted); font-size: .74rem; }
+.cfg-check { display: flex; gap: 6px; align-items: flex-start; font-size: .84rem; min-width: 0; }
+.cfg-check input { margin-top: 3px; accent-color: var(--accent); }
+.cfg-note { grid-column: 1 / -1; margin: 0; font-size: .8rem; color: var(--muted); }
+.cfg-reset { margin-top: 10px; }
+.fit-bad .fit-status { color: var(--bad, #b42318); }
+.fit-bad .fit-status::before { content: "✕ "; }

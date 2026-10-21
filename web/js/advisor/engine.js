@@ -83,8 +83,15 @@ export const LOW_QUALITY = new Set(['Q3_K_M', 'IQ2_M', '3-bit']);
  * Blackwell has FP4 tensor cores (NVFP4), Hopper / Ada / CDNA3 have FP8, Ampere and older use INT8 / INT4.
  * Each entry: [label, bytes per parameter, quality factor, pre-quantized repo key (null = runs from the original)].
  */
+const SELF_FORMATS = {
+  nvfp4: ['NVFP4', 0.56, 0.95, 'nvfp4'], fp8: ['FP8', 1.05, 0.99, 'fp8'], int8: ['INT8 (W8A16)', 1.05, 0.985, 'int8'],
+  awq: ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq'], gptq: ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq'],
+};
 export function serverLadder(arch, m = {}) {
   if (m.fam === 'GPT-OSS' || (m.q && m.q.mxfp4 === m.id)) return [['MXFP4 (native)', 0.55, 1, null]];
+  // A repository that is itself a quantized upload runs only in its own format (NVFP4 needs Blackwell).
+  const self = m.q && Object.keys(m.q).find((k) => m.q[k] === m.id);
+  if (self) return SELF_FORMATS[self] && (self !== 'nvfp4' || arch === 'blackwell') ? [SELF_FORMATS[self]] : [];
   const half = arch === 'turing' ? 'FP16' : 'BF16';
   if (arch === 'blackwell') return [[half, 2.0, 1, null], ['FP8', 1.05, 0.99, 'fp8'], ['NVFP4', 0.56, 0.95, 'nvfp4']];
   if (['hopper', 'ada', 'cdna3'].includes(arch)) return [[half, 2.0, 1, null], ['FP8', 1.05, 0.99, 'fp8'], ['AWQ / GPTQ 4-bit', 0.6, 0.94, 'awq']];
@@ -122,31 +129,48 @@ export function mtpMethod(m) {
 }
 
 /**
- * Best speculative-decoding option for a model on a runtime, or null.
+ * Speculative-decoding options for a model on a runtime, best first.
  * vLLM: MTP heads, DFlash / DFlash2 and EAGLE-3 drafts. SGLang: also DSpark. llama.cpp: MTP with an
  * MTP-preserving GGUF (single user, text only) or a DFlash2 GGUF draft (needs a build with DFlash2).
  */
-export function specFor(m, runtime, s) {
+export function specOptions(m, runtime, s) {
+  const out = [];
   const drafts = m.dr || [];
-  const server = ['vllm', 'sglang'].includes(runtime);
-  const pickDraft = (methods, gguf) => drafts.find((d) => methods.includes(d.m) && !!d.g === gguf);
-  if (server) {
+  if (['vllm', 'sglang'].includes(runtime)) {
     const allowed = runtime === 'sglang' ? ['dflash2', 'dflash', 'dspark', 'eagle3', 'eagle'] : ['dflash2', 'dflash', 'eagle3', 'eagle'];
-    const d = pickDraft(allowed, false);
-    if (d) return { method: d.m, draft: d.id, draftP: d.p || 1, ...SPEC[d.m] };
-    if (m.mtp) return { method: 'mtp', draft: null, draftP: 0, ...SPEC.mtp, vllmMethod: mtpMethod(m) };
-    return null;
+    for (const method of allowed) {
+      const d = drafts.find((x) => x.m === method && !x.g);
+      if (d) out.push({ method, draft: d.id, draftP: d.p || 1, ...SPEC[method] });
+    }
+    if (m.mtp) out.push({ method: 'mtp', draft: null, draftP: 0, ...SPEC.mtp, vllmMethod: mtpMethod(m) });
+  } else if (runtime === 'llamacpp') {
+    if (m.gmtp && s.users <= 1 && s.use !== 'vision') out.push({ method: 'mtp', draft: null, draftP: 0, ...SPEC.mtp, gguf: m.gmtp });
+    const d = drafts.find((x) => x.m === 'dflash2' && x.g);
+    if (d) out.push({ method: 'dflash2', draft: d.id, draftP: d.p || 1, ...SPEC.dflash2, experimental: true });
   }
-  if (runtime === 'llamacpp') {
-    if (m.gmtp && s.users <= 1 && s.use !== 'vision') return { method: 'mtp', draft: null, draftP: 0, ...SPEC.mtp, gguf: m.gmtp };
-    const d = pickDraft(['dflash2'], true);
-    if (d) return { method: 'dflash2', draft: d.id, draftP: d.p || 1, ...SPEC.dflash2, experimental: true };
-  }
+  return out;
+}
+
+/** Thinking behaviour: hybrid models can switch it off; "effort" models (gpt-oss) take low/medium/high. */
+export function thinkingOf(m) {
+  const id = m.id.toLowerCase();
+  if (m.fam === 'GPT-OSS' || /gpt-oss/.test(id)) return { mode: 'effort', vllmParser: null, sglangParser: 'gpt-oss' };
+  if (/instruct-2507|qwen3-coder|non-?thinking/.test(id)) return null;
+  if (/thinking|qwq|deepseek-r1/.test(id)) return { mode: 'always', vllmParser: /deepseek-r1/.test(id) ? 'deepseek_r1' : 'qwen3', sglangParser: /deepseek-r1/.test(id) ? 'deepseek-r1' : 'qwen3' };
+  if (/qwen3/.test(id)) return { mode: 'hybrid', vllmParser: 'qwen3', sglangParser: 'qwen3' };
+  if (/glm-4\.[5-9]|glm-5/.test(id)) return { mode: 'hybrid', vllmParser: 'glm45', sglangParser: 'glm45' };
+  if (m.reasoning) return { mode: 'always', vllmParser: null, sglangParser: null };
   return null;
+}
+
+export function specFor(m, runtime, s) {
+  return specOptions(m, runtime, s)[0] || null;
 }
 
 /** Speculative decoding helps one user a lot and a busy server much less. */
 export const specGain = (spec, users) => 1 + (spec.speedup - 1) * (users <= 1 ? 1 : users <= 4 ? 0.7 : users <= 16 ? 0.4 : 0.15);
+/** Speed with a speculative option; drafting gains less when the target is already very fast. */
+export const withSpec = (tps, spec, users) => Math.min(Math.max(tps, 350), tps * (1 + (specGain(spec, users) - 1) / (1 + tps / 400)));
 const KV_FACTOR = { f16: 1, q8: 0.5, q4: 0.28 };
 
 // Size slider stops (billions of parameters) and context stops (tokens).
@@ -189,8 +213,10 @@ export function budgetOf(s) {
       label: `${chip.name} Mac · ${s.mac} GB unified memory`,
       detail: `macOS lets the GPU use about ${Math.round(usable)} GB of it (raise it with sudo sysctl iogpu.wired_limit_mb). Bandwidth ${chip.bw} GB/s.` };
   }
-  if (s.hw === 'unified') {
-    const u = UNIFIED.find((x) => x.id === s.unified) || UNIFIED[0];
+  const picked = s.hw === 'gpu' ? gpuById(s.gpu) : null;
+  if (s.hw === 'unified' || picked?.unified) {
+    const u = UNIFIED.find((x) => x.id === (picked?.unified ? picked.id : s.unified)) || UNIFIED[0];
+    if (picked?.unified) s = { ...s, nunits: s.ngpu };
     const n = Math.min(Math.max(1, s.nunits || 1), u.cluster || 1);
     return { kind: 'unified', arch: u.arch, vendor: u.vendor, arm: !!u.arm, fast: u.usable * n, fastBw: u.bw, slow: 0, slowBw: 0, n,
       label: `${n > 1 ? `${n}× ` : ''}${u.name}`,
@@ -223,12 +249,15 @@ export function speedOf(activeP, bpp, s, b, where, runtime) {
   const kvRead = kvGB(activeP, s.ctx) * (KV_FACTOR[s.kv] ?? 1) * 0.5;
   const perToken = activeP * bpp + kvRead;
   const eff = b.kind === 'cpu' ? 0.5 : b.kind === 'unified' ? 0.65 : 0.7;
-  if (where === 'gpu') return Math.min(250, (eff * fastBandwidth(b, runtime)) / perToken);
-  if (where === 'cpu') return Math.min(250, (0.45 * b.slowBw) / perToken);
+  // Fixed per-token cost (kernel launches, sampling, scheduling) that bandwidth does not cover:
+  // it keeps small and MoE models from reaching unrealistic speeds.
+  const fixed = where === 'cpu' || b.kind === 'cpu' ? 0.004 : 0.0025;
+  if (where === 'gpu') return Math.min(250, 1 / (perToken / (eff * fastBandwidth(b, runtime)) + fixed));
+  if (where === 'cpu') return Math.min(250, 1 / (perToken / (0.45 * b.slowBw) + fixed));
   // split: the share that does not fit runs from system RAM
   const totalNeed = perToken;
   const fastShare = Math.min(1, Math.max(0.05, b.fast / (b.fast + (b.slowNeed || b.slow))));
-  const t = (totalNeed * fastShare) / (eff * b.fastBw) + (totalNeed * (1 - fastShare)) / (0.45 * b.slowBw);
+  const t = (totalNeed * fastShare) / (eff * b.fastBw) + (totalNeed * (1 - fastShare)) / (0.45 * b.slowBw) + fixed;
   return Math.min(250, 1 / t);
 }
 
@@ -281,6 +310,30 @@ export function fitModel(m, kind, s, b, runtime) {
   return fast.length ? pick(fast) : pick(options);
 }
 
+/**
+ * Recompute memory and speed of an existing recommendation for per-model settings
+ * (context, users, KV precision, speculative option) without changing its quantization.
+ */
+export function refit(r, s2, b, spec) {
+  const { m, fit } = r;
+  if (fit.tps == null || m.p == null) return { ...fit, spec: null, fits: true };
+  const need = memNeeded(m.p, fit.bpp, s2);
+  const extra = spec ? spec.draftP * 2 * 1.1 + (spec.method === 'mtp' ? need.weights * 0.03 : 0) : 0;
+  const total = need.total + extra;
+  const pool = fit.where === 'gpu' ? b.fast : b.fast + b.slow;
+  const active = m.a || (m.moe ? m.p * 0.12 : m.p);
+  const bb = fit.where === 'split' ? { ...b, slowNeed: Math.max(0, total - b.fast) } : b;
+  const base = speedOf(active, fit.bpp, s2, bb, fit.where, r.rt) * (active < m.p ? 0.7 : 1);
+  return {
+    ...fit,
+    spec,
+    need: { ...need, draft: extra || undefined, total },
+    tpsBase: base,
+    tps: spec ? withSpec(base, spec, s2.users) : base,
+    fits: total <= pool + 1e-9,
+  };
+}
+
 /** Largest dense model (B) that fits fully in fast memory at each quantization. */
 export function capacity(kind, s, b) {
   const mem = b.fast || b.slow;
@@ -319,6 +372,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
   const wQ = 1.8 * (1 - s.priority / 100) + 0.4;
   const wS = 1.8 * (s.priority / 100) + 0.2;
   const out = [];
+  const must = new Set(Array.isArray(s.must) ? s.must : String(s.must || '').split(',').filter(Boolean));
 
   for (const m of data.models) {
     if (!use.tasks.includes(m.task)) continue;
@@ -331,6 +385,13 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       if (m.p < lo * 0.9 || m.p > hi * 1.1) continue;
     }
     const name = m.id.toLowerCase();
+    const isMoe = !!m.a || has(m, 'moe');
+    if (s.archFilter === 'moe' && !isMoe) continue;
+    if (s.archFilter === 'dense' && isMoe) continue;
+    if (must.has('tools') && !has(m, 'tools') && !(data.tool_families.includes(m.fam) && has(m, 'chat'))) continue;
+    if (must.has('vision') && !has(m, 'vision')) continue;
+    if (must.has('reasoning') && !has(m, 'reasoning') && !thinkingOf(m)) continue;
+    if (must.has('longctx') && !has(m, 'longctx')) continue;
     if (isLLM && /(^|[-_/])base([-_]|$)/.test(name) && !has(m, 'chat')) continue;
     if (s.use === 'vision' && !has(m, 'vision')) continue;
     if (s.use === 'code' && !has(m, 'code') && !(has(m, 'chat') && data.tool_families.includes(m.fam))) continue;
@@ -340,7 +401,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       if (s.ragPart === 'embed' && has(m, 'rerank')) continue;
     }
 
-    let fit = null, kind = null;
+    let fit = null, kind = null, rt = null, specs = [];
     if (isLLM) {
       if (m.p == null) continue;
       for (const k of kinds) {
@@ -353,13 +414,17 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       }
       if (!fit) continue;
       // Speculative decoding: faster single-user generation for a little extra memory (the draft).
-      const rt = s.runtime !== 'any' ? s.runtime : kind === 'st' ? 'vllm' : kind === 'gguf' ? 'llamacpp' : kind;
-      const spec = s.spec !== 'off' ? specFor(m, rt, s) : null;
+      rt = s.runtime !== 'any' ? s.runtime : kind === 'st' ? 'vllm' : kind === 'gguf' ? 'llamacpp' : kind;
+      specs = specOptions(m, rt, s);
+      const spec = s.spec !== 'off' ? specs[0] || null : null;
       if (spec) {
         const extra = spec.draftP * 2 * 1.1 + (spec.method === 'mtp' ? fit.need.weights * 0.03 : 0);
         const room = (fit.where === 'gpu' ? b.fast : b.fast + b.slow) - fit.need.total;
-        if (extra <= room) fit = { ...fit, spec, tpsBase: fit.tps, tps: fit.tps * specGain(spec, s.users), need: { ...fit.need, draft: extra, total: fit.need.total + extra } };
+        if (extra <= room) fit = { ...fit, spec, tpsBase: fit.tps, tps: withSpec(fit.tps, spec, s.users), need: { ...fit.need, draft: extra, total: fit.need.total + extra } };
       }
+      if (must.has('spec') && !fit.spec) continue;
+      if (must.has('prequant') && kind === 'st' && fit.repo === m.id && !fit.onTheFly && !(m.q && Object.values(m.q).includes(m.id))) continue;
+      if (must.has('prequant') && kind === 'gguf' && !m.gguf) continue;
     } else {
       const p = m.p;
       const need = p != null ? p * 2 + (s.use === 'image' ? 3 : 0.6) : null;
@@ -409,7 +474,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
       const ratio = fit.tps / targetSpeed(s.priority);
       score -= fit.tps < 3 ? 6 : ratio < 0.35 ? 4 : ratio < 0.6 ? 2 : ratio < 0.85 ? 0.7 : 0;
     }
-    if (fit.spec) why.push(`${fit.spec.label}: ≈ ${round1(specGain(fit.spec, s.users))}× faster generation${fit.spec.experimental ? ' (needs a llama.cpp build with DFlash2)' : ''}`);
+    if (fit.spec) why.push(`${fit.spec.label}: ≈ ${round1(fit.tps / fit.tpsBase)}× faster generation${fit.spec.experimental ? ' (needs a llama.cpp build with DFlash2)' : ''}`);
     if (kind === 'st' && fit.repo !== m.id) why.push(`Pre-quantized ${fit.quant} build available for your ${b.arch === 'blackwell' && fit.quant === 'NVFP4' ? 'Blackwell GPU (native FP4)' : 'GPU'}`);
     if (kind === 'gguf' && !m.gguf) { score -= 1.5; why.push('No GGUF build tracked yet: use the search link below'); }
     if (kind === 'mlx' && !m.mlx) score -= 1;
@@ -420,14 +485,14 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
     if (official) why.push('From the original lab');
     if (m.a) why.push(`Mixture of experts: ${m.a}B of ${round1(m.p)}B parameters work per token, so it runs like a ${m.a}B model`);
     else if (has(m, 'moe') && isLLM) why.push('Mixture of experts (active size not published): speed estimated at ~12% active');
-    out.push({ m, fit, kind, score, quality, why });
+    out.push({ m: { ...m, moe: isMoe }, fit, kind, score, quality, why, rt, specs, reasoning: has(m, 'reasoning') });
   }
 
   out.sort((a, c) => c.score - a.score);
   // At most two near-copies of the same model (e.g. -Instruct and -FP8 uploads).
   const seen = new Map();
   const list = out.filter((r) => {
-    const key = r.m.id.split('/').pop().toLowerCase().replace(/[-_.]?(instruct|it|chat|gguf|awq|fp8|bf16|nvfp4|mlx|\d+bit).*$/, '');
+    const key = r.m.id.split('/').pop().toLowerCase().replace(/[-_.](instruct|it|chat|gguf|awq|gptq|fp8|int[48]|bf16|nvfp4|mxfp4|mlx|w\d+a\d+|\d+bit|\d+gb)(?=[-_.]|$).*$/, '');
     seen.set(key, (seen.get(key) || 0) + 1);
     return seen.get(key) <= 2;
   });

@@ -92,6 +92,24 @@ KNOWN_ACTIVE = [
 ]
 
 
+# Size written in the name ("…-35B", "…-1.5B", "…-270M"); not the active size of "A3B" or the expert size of "8x7B".
+NAMED_SIZE_RX = re.compile(r"(?:^|[-_/. ])(\d+(?:\.\d+)?)([bm])(?=$|[-_. ])", re.I)
+# CI fixtures and test uploads, not models anyone should run.
+TEST_REPO_RX = re.compile(r"internal-testing|(^|/)(pruna-)?test[-_/]|tiny-random|(^|[-_/])dummy([-_]|$)", re.I)
+
+
+def size_b(m: dict) -> float | None:
+    """Parameters in billions. The Hub count is wrong for some repos (packed 4-bit weights, missing
+    safetensors metadata), so a size written in the name wins when the count is far below it."""
+    measured = (m["parameters"] or 0) / 1e9
+    named = None
+    for num, unit in NAMED_SIZE_RX.findall(m["id"].split("/")[-1]):
+        named = float(num) / (1000 if unit.lower() == "m" else 1)
+    if named and named >= 0.01 and (not measured or measured < named * 0.25):
+        return named
+    return measured or None
+
+
 def build(con) -> dict:
     models = rows(con, f"""
         SELECT id, author, pipeline_tag AS task, license_family AS lf, license, parameters, family,
@@ -132,7 +150,9 @@ def build(con) -> dict:
             list_has_any(tags, ['draft-model', 'speculative-decoding-draft', 'drafter', 'dflash', 'dflash2', 'dspark', 'eagle3', 'speculators'])
             OR regexp_matches(lower(id), 'dflash|dspark|eagle'))"""):
         name = d["id"].lower() + " " + " ".join(t.lower() for t in d["tags"] or [])
-        method = next((mname for mname, rx in DRAFT_METHODS if re.search(rx, name)), "draft")
+        method = next((mname for mname, rx in DRAFT_METHODS if re.search(rx, name)), None)
+        if method is None:  # no runtime knows how to use a drafter of unknown type (MTP heads are handled apart)
+            continue
         targets = [t.split(":", 2)[-1].lower() for t in d["tags"] or [] if t.startswith("base_model:") and t.count(":") >= 1]
         if d["base_model"]:
             targets += [p.strip().lower() for p in d["base_model"].split(",")]
@@ -221,26 +241,29 @@ def build(con) -> dict:
         # Built-in multi-token-prediction heads: tagged, or Qwen3.5+ / DeepSeek-V3 style architectures.
         mtp = is_mtp(m) or bool(gguf_mtp) or bool(tags_l & {"qwen3_5", "qwen3_5_moe", "qwen3_next", "deepseek_v3", "glm4_moe", "mimo"})
         method_rank = {mname: i for i, (mname, _) in enumerate(DRAFT_METHODS)}
-        target_p = (m["parameters"] or 0) / 1e9
+        target_p = size_b(m) or 0
         my_drafts = [d for d in drafts.get(key, []) if not d["p"] or not target_p or d["p"] <= max(0.15 * target_p, 0.2)]
         # official drafter first (same lab, z-lab, NVIDIA, RadixArk), then the strongest method, then usage
         trusted = {m["author"].lower(), "z-lab", "nvidia", "radixark", "incoai", "redhatai"}
         my_drafts.sort(key=lambda d: (d["author"] not in trusted, method_rank.get(d["method"], 99), -d["dl"]))
         popular = (m["dl"] or 0) >= 300 or (m["likes"] or 0) >= 25 or (m["trend"] or 0) > 0
-        if not popular:
+        if not popular or TEST_REPO_RX.search(m["id"]):
+            continue
+        p_b = size_b(m)
+        if p_b is not None and p_b < 0.005:  # a few million parameters: toy / test models
             continue
         active = ACTIVE_RX.search(m["id"])
         active_b = float(active.group(1)) if active else None
         if active_b is None:
             for rx, a in KNOWN_ACTIVE:
                 # sanity check: a distilled dense model (e.g. "DeepSeek-R1-…-Qwen3-8B") is not the MoE original
-                if re.search(rx, m["id"].lower()) and (m["parameters"] or 0) / 1e9 > a * 2:
+                if re.search(rx, m["id"].lower()) and (p_b or 0) > a * 2:
                     active_b = a
                     break
         out.append({
             "id": m["id"],
             "task": m["task"],
-            "p": round(m["parameters"] / 1e9, 2) if m["parameters"] else None,
+            "p": round(p_b, 3) if p_b else None,
             "a": active_b,
             "fam": m["family"],
             "lf": m["lf"],

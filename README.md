@@ -13,12 +13,18 @@ It is built entirely on the open dataset
 |---|---|
 | **Overview** | Totals (live, removed, gated, % open license), top publishers by model count and by 30-day downloads, tasks, licenses, sizes, formats, languages, families and models created per week. |
 | **Model finder** | “Which model fits my needs?” Filter by text, task, language, commercial-use license, hardware budget (“fits in 16 GB”), format (GGUF, MLX, ONNX…), hide gated models; sort by downloads, likes, trending, newest or size. Each result has a short English model card and a link to the Hub. Filters are kept in the URL, so searches can be shared. |
+| **Family trees** | Which base models spawn the most derivatives (fine-tunes, quantizations, adapters, merges), derivatives by family, and a navigable radial graph + collapsible tree per base model. |
+| **Graveyard** | Models removed from the Hub: who removes the most, how long they lived, removals per week, and how gated/unclear-license models compare with live ones. Searchable list of every removed model. |
 
 ![Overview](docs/screenshots/overview.png)
 
 | Model finder | Mobile, dark theme |
 |---|---|
 | ![Model finder](docs/screenshots/finder.png) | ![Model finder on mobile](docs/screenshots/finder-mobile.png) |
+
+| Family trees | Graveyard |
+|---|---|
+| ![Family trees](docs/screenshots/families.png) | ![Graveyard](docs/screenshots/graveyard.png) |
 
 ## How it works
 
@@ -83,6 +89,10 @@ npm run screenshots                       # refresh docs/screenshots/
   short English descriptions are generated from structured metadata, and the schema is translated on the
   site’s *About the data* page.
 * The radar started in August 2026, so anything earlier is reconstructed from creation dates.
+* Family trees use the Hub tags `base_model:<relation>:<parent>`; models that only declare `base_model` count as
+  “other derivatives”. Parents are matched case-insensitively and only live models are counted as derivatives.
+  Very large families are trimmed in the tree (top 120 children of the base, top 25 below that, 4 generations).
+* Removal dates are when the radar *detected* the 404, not when the author deleted the model.
 
 ## License and attribution
 

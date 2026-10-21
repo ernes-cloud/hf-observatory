@@ -8,7 +8,7 @@ import {
   agentKind, capacity, recommend, refit, runtimeKinds, speedLabel, thinkingOf,
 } from '../advisor/engine.js';
 import { commandsFor, defaultOptions, defaultSpecTokens } from '../advisor/commands.js';
-import { addFavorite, exportFavorites, importFavorites, isEdited, lintCompose, loadFavorites, persistent, removeFavorite, updateFavorite } from '../advisor/favorites.js';
+import { addFavorite, exportFavorites, importFavorites, isEdited, lintCompose, loadFavorites, packFavorite, persistent, removeFavorite, unpackFavorite, updateFavorite } from '../advisor/favorites.js';
 
 const LANGS = ['en', 'es', 'zh', 'fr', 'de', 'ja', 'ko', 'pt', 'it', 'ru', 'ar', 'hi'];
 const MUST = [['tools', 'Tool calling'], ['vision', 'Vision'], ['reasoning', 'Thinking / reasoning'], ['spec', 'Speculative decoding'], ['prequant', 'Ready-made build for my setup'], ['longctx', 'Long context']];
@@ -35,7 +35,7 @@ let shown = PAGE;
 let compare = new Set();
 const cardOpts = new Map(); // model id → per-model options from the Customize panel
 const openCfg = new Set(); // model ids whose Customize panel is open
-const favUi = { open: false, editing: null, confirm: null, msg: '' }; // saved-compose panel state
+const favUi = { open: false, editing: null, confirm: null, msg: '', shared: null }; // saved-compose panel state
 let els = {};
 
 /* --------------------------------------------------------------- formatting */
@@ -381,6 +381,9 @@ function cfgHtml(r, o, b) {
   fields.push(txt('imageTag', 'Docker image tag', 'latest', 'Pin a version for reproducible deploys.'));
   fields.push(chk('restart', 'Restart automatically'));
   fields.push(chk('healthcheck', 'Health check'));
+  fields.push('<p class="cfg-note"><strong>Full stack compose</strong></p>');
+  fields.push(chk('stackUi', 'Open WebUI chat interface', '(port 3000)'));
+  fields.push(chk('stackRag', 'Embeddings + reranker for documents', '(TEI)'));
   return `<div class="cfg" data-cfg-for="${esc(m.id)}">
     <div class="cfg-grid">${fields.join('')}</div>
     <button type="button" class="btn cfg-reset">Reset to recommended</button>
@@ -410,7 +413,7 @@ function resultCard(r, i) {
       : used > 92 ? ['tight', 'Fits, but tight'] : ['ok', 'Fits comfortably'];
   const sp = fit.tps != null ? speedLabel(fit.tps) : null;
   const lf = LICENSE_FAMILY[m.lf];
-  const cmds = commandsFor(r, state, b, A.caps, custom, r.specs);
+  const cmds = commandsFor(r, state, b, A.caps, custom, r.specs, isLLMCard ? stackPicks() : null);
   const id = `cmd-${i}`;
   return `<article class="advice" data-id="${esc(m.id)}">
     <div class="advice-head">
@@ -569,6 +572,24 @@ function refresh(resetPage = true) {
   if (!favUi.editing || !els.favs.firstChild) renderFavs(); // never throw away an edit in progress
 }
 
+/* --------------------------------------------------------------- full stack */
+
+/**
+ * Retrieval models for the "Full stack" compose: the advisor's own top embedding model and reranker
+ * for this machine (small ones, they share the GPU or run on the CPU). Cached per machine.
+ */
+function stackPicks() {
+  const key = JSON.stringify([state.hw, state.gpu, state.ngpu, state.gpu2, state.chip, state.mac, state.ram, state.lang]);
+  if (stackPicks.key === key) return stackPicks.val;
+  const small = SIZE_STOPS.indexOf(1); // up to 1B parameters
+  // TEI loads safetensors / PyTorch weights, not GGUF or ONNX-only uploads
+  const pick = (part) => recommend(A, sanitize({ ...state, use: 'rag', ragPart: part, runtime: 'any', sizeLo: 0, sizeHi: small, must: '', archFilter: 'any', commercial: true, hideGated: true }))
+    .list.find((x) => x.m.st && !/gguf|onnx|openvino|mlx/i.test(x.m.id))?.m.id || null;
+  stackPicks.key = key;
+  stackPicks.val = { embed: pick('embed'), rerank: pick('rerank') };
+  return stackPicks.val;
+}
+
 /* --------------------------------------------------------------- nothing fits */
 
 /** Try relaxing one setting at a time and offer the ones that bring results back. */
@@ -630,6 +651,7 @@ function favHtml(f) {
         <button type="button" class="btn" data-fav-act="edit">Edit</button>
         ${f.params ? '<button type="button" class="btn" data-fav-act="open" title="Load the machine and settings it was made with, and its Customize options">Open in the advisor</button>' : ''}
         <button type="button" class="btn" data-fav-act="copy">Copy</button>
+        <button type="button" class="btn" data-fav-act="share" title="A link that carries this compose and its settings: whoever opens it can save it">Share link</button>
         <a class="btn" download="${esc(f.name.replace(/[^\w.-]+/g, '-').toLowerCase() || 'docker-compose')}.yml" href="data:text/yaml;charset=utf-8,${encodeURIComponent(f.yaml)}">Download</a>
         <button type="button" class="btn danger" data-fav-act="delete">${favUi.confirm === f.id ? 'Click again to delete' : 'Delete'}</button>
       </div>`}
@@ -648,6 +670,12 @@ function drawFavs() {
   els.favs.innerHTML = `<details class="card favs"${favUi.open ? ' open' : ''}>
     <summary><span class="favs-title">★ Saved composes</span> <span class="count-pill">${list.length}</span></summary>
     ${favUi.msg ? `<p class="note fav-msg" role="status">${esc(favUi.msg)}</p>` : ''}
+    ${favUi.shared ? `<div class="fav-shared" role="region" aria-label="Shared compose">
+      <p><strong>Shared with you:</strong> “${esc(favUi.shared.name)}” · <a href="${esc(hfUrl(favUi.shared.model))}" rel="noopener">${esc(favUi.shared.model)}</a> · ${esc(shortRuntime(favUi.shared.runtime))}${favUi.shared.machine ? ` · ${esc(favUi.shared.machine)}` : ''}</p>
+      ${favUi.shared.note ? `<p class="fav-notes">${esc(favUi.shared.note)}</p>` : ''}
+      <details class="fav-preview"><summary>Show the file</summary><pre><code>${esc(favUi.shared.yaml)}</code></pre></details>
+      <div class="fav-actions"><button type="button" class="btn btn-primary" data-fav-act="shared-save">Save to my composes</button><button type="button" class="btn" data-fav-act="shared-dismiss">Dismiss</button></div>
+    </div>` : ''}
     ${list.length ? `<ul class="fav-list">${list.map(favHtml).join('')}</ul>`
       : '<p class="note">Press <strong>☆ Save</strong> under any Docker Compose file to keep it here. You can rename it, edit the YAML and reopen it later with the same settings.</p>'}
     <div class="fav-tools">
@@ -719,6 +747,14 @@ async function onFavClick(e) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     return;
   }
+  if (act === 'shared-save' && favUi.shared) {
+    const { id: _ignored, ...rest } = favUi.shared;
+    const f = addFavorite(rest);
+    favUi.shared = null;
+    favFlash(`Saved “${f.name}” to your composes.`);
+    return;
+  }
+  if (act === 'shared-dismiss') { favUi.shared = null; renderFavs(); return; }
   const li = btn.closest('.fav');
   const id = li?.dataset.fav;
   const f = loadFavorites().find((x) => x.id === id);
@@ -736,6 +772,11 @@ async function onFavClick(e) {
     return;
   }
   if (act === 'open') { openFavorite(f); return; }
+  if (act === 'share') {
+    const url = `${location.origin}${location.pathname}#advisor?${f.params ? `${f.params}&` : ''}fav=${await packFavorite(f)}`;
+    try { await navigator.clipboard.writeText(url); favFlash('Link copied: whoever opens it can save this compose.'); } catch { favFlash(url); }
+    return;
+  }
   if (act === 'copy') {
     try { await navigator.clipboard.writeText(f.yaml); btn.textContent = 'Copied'; } catch { btn.textContent = 'Copy failed'; }
     setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
@@ -806,6 +847,7 @@ export async function render(section, params) {
   };
   syncForm();
   refresh();
+  receiveShared(params);
 
   // Phones: a floating shortcut from the long form to the results, hidden once they are on screen.
   const jump = section.querySelector('#a-jump');
@@ -927,8 +969,21 @@ export async function render(section, params) {
   });
 }
 
+/** A link with ?fav= carries someone's saved compose: offer to save it. */
+async function receiveShared(params) {
+  const packed = params?.get('fav');
+  if (!packed) return;
+  try {
+    favUi.shared = await unpackFavorite(packed);
+    favUi.open = true;
+    renderFavs();
+    els.favs.scrollIntoView({ block: 'start' });
+  } catch (err) { favUi.open = true; favFlash(`Could not read the shared compose: ${err.message}`); }
+}
+
 export function update(section, params) {
   if (!A) return;
+  if (params?.get('fav')) { receiveShared(params); }
   const next = readParams(params);
   if (Object.keys(KEYS).every((k) => next[k] === state[k])) return;
   state = next;

@@ -32,8 +32,8 @@ const base = `http://127.0.0.1:${server.address().port}/`;
 const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
 const failures = [];
 
-async function open(viewport, hash = '#advisor') {
-  const ctx = await browser.newContext({ viewport });
+async function open(viewport, hash = '#advisor', extra = {}) {
+  const ctx = await browser.newContext({ viewport, ...extra });
   const page = await ctx.newPage();
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error' && !/fonts\.(googleapis|gstatic)/.test(m.text() + (m.location()?.url || ''))) errors.push(m.text()); });
@@ -224,6 +224,33 @@ for (const [name, viewport, steps] of [['desktop', { width: 1280, height: 900 },
   if (await page.$$eval('.fav', (xs) => xs.length) !== 1) failures.push('favourites: import did not bring it back');
   await check(page, errors, 'favourites');
   console.log('  favourites: save → rename → edit → reload → reopen → export → delete → import ok');
+  await ctx.close();
+}
+
+// Share a saved compose by link: a fresh browser opens it, sees it and saves it.
+{
+  const { ctx, page, errors } = await open({ width: 1280, height: 900 }, '#advisor?u=chat&g=rtx-4090&rt=vllm', { permissions: ['clipboard-read', 'clipboard-write'] });
+  const stackTab = page.locator('.advice').first().locator('.run-tab', { hasText: 'Full stack' });
+  if (!(await stackTab.count())) failures.push('stack: no "Full stack" tab on a vLLM card');
+  else {
+    await stackTab.click();
+    const code = await page.locator('.advice').first().locator('.run-panel:not([hidden]) pre code').textContent();
+    if (!/open-webui:/.test(code) || !/OPENAI_API_BASE_URL=http:\/\/vllm:8000\/v1/.test(code) || !/embeddings:/.test(code)) failures.push('stack: compose lacks Open WebUI wired to vLLM or the embeddings service');
+    await page.locator('.advice').first().locator('.run-panel:not([hidden]) .fav-save').click();
+  }
+  await page.click('[data-fav-act="share"]');
+  await page.waitForTimeout(300);
+  const url = await page.evaluate(() => navigator.clipboard.readText());
+  if (!/#advisor\?.*fav=[zj]/.test(url)) failures.push(`share: unexpected link ${url.slice(0, 80)}`);
+  const other = await open({ width: 1280, height: 900 }, url.slice(url.indexOf('#')));
+  await other.page.waitForSelector('.fav-shared', { timeout: 5000 }).catch(() => failures.push('share: the shared compose is not offered'));
+  await other.page.click('[data-fav-act="shared-save"]').catch(() => {});
+  const saved = await other.page.evaluate(() => ({ n: document.querySelectorAll('.fav').length, yaml: document.querySelector('.fav-preview code')?.textContent || '' }));
+  if (saved.n !== 1 || !/open-webui/.test(saved.yaml)) failures.push(`share: after saving the shared compose: ${JSON.stringify({ n: saved.n })}`);
+  await check(other.page, other.errors, 'shared link');
+  await other.ctx.close();
+  await check(page, errors, 'share + stack');
+  console.log(`  share link (${url.length} chars) → fresh browser → saved; full stack tab ok`);
   await ctx.close();
 }
 

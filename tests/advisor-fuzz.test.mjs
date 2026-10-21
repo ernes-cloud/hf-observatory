@@ -51,6 +51,7 @@ function randomOpts(r, o) {
   return x;
 }
 
+const STACK = { embed: 'BAAI/bge-m3', rerank: 'BAAI/bge-reranker-v2-m3' };
 const BAD_TEXT = /\bundefined\b|\bNaN\b|\[object |\bInfinity\b|: null\b|=null\b|\bnull\b(?!\))/;
 
 function checkCommands(tabs, where) {
@@ -59,9 +60,11 @@ function checkCommands(tabs, where) {
     for (const text of [t.code, t.note, t.label]) if (text) assert.doesNotMatch(text, BAD_TEXT, `${where} · ${t.label}: ${text}`);
     if (t.yaml && YAML) {
       const doc = YAML.parse(t.code.split('\n# then:')[0]);
-      assert.ok(doc?.services && Object.keys(doc.services).length === 1, `${where} · ${t.label}: no service`);
-      const svc = Object.values(doc.services)[0];
+      assert.ok(doc?.services && Object.keys(doc.services).length >= 1, `${where} · ${t.label}: no service`);
+      if (!/Full stack/.test(t.label)) assert.equal(Object.keys(doc.services).length, 1, `${where} · ${t.label}: one service`);
+      for (const svc of Object.values(doc.services)) {
       assert.match(svc.image, /^[\w./-]+:[\w.-]+$/, `${where} · ${t.label}: image`);
+      for (const d of svc.depends_on || []) assert.ok(doc.services[d], `${where} · ${t.label}: depends on missing ${d}`);
       if (svc.command != null) {
         assert.equal(typeof svc.command, 'string');
         // quotes in the command must be balanced or compose cannot split it
@@ -69,6 +72,9 @@ function checkCommands(tabs, where) {
         assert.doesNotMatch(svc.command.trim(), /\n/, 'folded command must be one line');
       }
       for (const p of svc.ports || []) assert.match(p, /^\d{1,5}:\d{1,5}$/);
+      }
+      const ports = Object.values(doc.services).flatMap((x) => (x.ports || []).map((p) => p.split(':')[0]));
+      assert.equal(new Set(ports).size, ports.length, `${where} · ${t.label}: two services publish the same port ${ports}`);
     }
   }
 }
@@ -123,13 +129,13 @@ function checkResult(res, s, label, r) {
       if (fit.spec.draft) assert.ok((m.dr || []).some((d) => d.id === fit.spec.draft), `${where}: draft ${fit.spec.draft}`);
     }
     // the generated commands, with the recommended and with random per-model settings
-    checkCommands(commandsFor(x, s, b, data.caps, null, x.specs), where);
+    checkCommands(commandsFor(x, s, b, data.caps, null, x.specs, STACK), where);
     const o = randomOpts(r, defaultOptions(x, s, b));
     const specObj = o.spec === 'off' ? null : x.specs.find((sp) => sp.method === o.spec) || null;
     const f2 = refit(x, { ...s, ctx: o.ctx, users: o.users, kv: o.kv }, b, specObj);
     assert.ok(Number.isFinite(f2.need.total) && Number.isFinite(f2.tps) && f2.tps > 0, `${where}: refit`);
     assert.equal(typeof f2.fits, 'boolean');
-    checkCommands(commandsFor(x, s, b, data.caps, o, x.specs), `${where} (custom ${JSON.stringify(o)})`);
+    checkCommands(commandsFor(x, s, b, data.caps, o, x.specs, STACK), `${where} (custom ${JSON.stringify(o)})`);
   }
 }
 

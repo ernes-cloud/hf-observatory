@@ -101,3 +101,37 @@ export function lintCompose(text) {
   });
   return issues.slice(0, 5);
 }
+
+/* ------------------------------------------------------------------ share by link */
+
+const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+
+async function pipe(bytes, stream) {
+  return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+}
+
+/**
+ * A saved compose packed into a URL-safe string, compressed when the browser can ("z" prefix,
+ * deflate-raw) or plain ("j" prefix). Nothing leaves the browser: the data travels in the link itself.
+ */
+export async function packFavorite(f) {
+  const json = JSON.stringify({ n: f.name, m: f.model, r: f.runtime, h: f.machine, y: f.yaml, g: f.generated === f.yaml ? undefined : f.generated, p: f.params, o: f.opts, t: f.note || undefined });
+  const bytes = new TextEncoder().encode(json);
+  if (typeof CompressionStream === 'function') {
+    try { return `z${b64url(await pipe(bytes, new CompressionStream('deflate-raw')))}`; } catch { /* fall through */ }
+  }
+  return `j${b64url(bytes)}`;
+}
+
+/** The inverse of packFavorite; returns a favourite-shaped object (not yet saved) or throws. */
+export async function unpackFavorite(text) {
+  if (!text || text.length > 60000) throw new Error('This link does not contain a saved compose.');
+  let bytes = unb64url(text.slice(1));
+  if (text[0] === 'z') bytes = await pipe(bytes, new DecompressionStream('deflate-raw'));
+  else if (text[0] !== 'j') throw new Error('Unknown link format.');
+  const d = JSON.parse(new TextDecoder().decode(bytes));
+  const f = clean({ id: 'shared', name: d.n, model: d.m, runtime: d.r, machine: d.h, yaml: d.y, generated: d.g ?? d.y, params: d.p, opts: d.o, note: d.t });
+  if (!f) throw new Error('The shared compose is incomplete.');
+  return f;
+}

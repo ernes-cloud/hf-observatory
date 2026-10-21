@@ -178,6 +178,14 @@ npm run screenshots                       # refresh docs/screenshots/
   and whoever opens the link sees it and can save it to their own list.
 * Every generated compose file is checked in CI with Docker's own parser (`tests/compose-validate.mjs` runs
   `docker compose config` on 600 of them across machines, runtimes and Customize settings).
+* **Results the developers published** (the dataset's `benchmarks` field, from model cards) are shown on cards
+  only for the original labs and recognised benchmarks (LibriSpeech, AMI, MMMU, OCRBench, GPQA, …), labelled as
+  self-reported; the speech ranking uses the reported LibriSpeech test-clean word error rate. Few LLM cards carry
+  such numbers in the dataset, so the LLM ranking still relies on size, precision, fit and adoption.
+* **Why it ranks #N**: every card can unfold its score as signed bars (fit for the job, popularity, recency,
+  original lab, answer quality, speed, and each penalty).
+* Speech and image commands follow the library a model is built for (NeMo for Parakeet / Canary, diffusers,
+  transformers); for other libraries the card points to the model card instead of guessing a command.
 * Without config data, the advisor's memory estimate is parameters × bytes per parameter for the quantization + a KV cache of
   ~1 GB per 8K tokens for an 8B model (growing sub-linearly with size; for mixture-of-experts models with the
   geometric mean of active and total parameters, and scaled by the attention type read from the Hub

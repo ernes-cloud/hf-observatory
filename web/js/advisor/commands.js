@@ -363,8 +363,18 @@ export function commandsFor(r, s, b, caps, opts, specs = [], stack = null) {
       const tei = teiImage(b);
       out.push({ label: 'Docker Compose (TEI)', yaml: true, code: ['services:', '  tei:', `    image: ${tei.image}`, '    ports:', '      - "8080:80"', ...hfCache('/data'), ...(tei.gpu ? gpuBlock(b) : []), ...restartBlock(o), ...commandBlock([`--model-id ${m.id}`])].join('\n'), note: `Text Embeddings Inference serves embeddings and rerankers over HTTP${tei.gpu ? '' : ' (CPU build: small embedding models run fine on it)'}.` });
     } else if (s.use === 'asr') {
-      out.push({ label: 'Python', code: `pip install transformers torch\npython -c "from transformers import pipeline; print(pipeline('automatic-speech-recognition', model='${m.id}')('audio.mp3'))"` });
+      if (m.lib === 'nemo') {
+        // NVIDIA NeMo checkpoints (Parakeet, Canary…) load with NeMo, not transformers
+        out.push({ label: 'Python (NeMo)', code: `pip install -U "nemo_toolkit[asr]"\npython -c "import nemo.collections.asr as a; m = a.models.ASRModel.from_pretrained('${m.id}'); print(m.transcribe(['audio.wav'])[0].text)"`, note: 'NeMo models expect 16 kHz mono WAV or FLAC audio.' });
+      } else if (!m.lib || m.lib === 'transformers') {
+        out.push({ label: 'Python', code: `pip install transformers torch\npython -c "from transformers import pipeline; print(pipeline('automatic-speech-recognition', model='${m.id}')('audio.mp3'))"` });
+      } else {
+        out.push({ label: 'Model page', note: `This model is built for <strong>${esc(m.lib)}</strong>, not the transformers pipeline: follow the usage on <a href="https://huggingface.co/${esc(m.id)}" rel="noopener">its model card</a>.` });
+      }
       if (/whisper/i.test(m.id)) out.push({ label: 'whisper.cpp', note: 'Whisper models also run very fast with whisper.cpp or faster-whisper.' });
+    } else if (s.use === 'image' && m.lib && m.lib !== 'diffusers') {
+      out.push({ label: 'Model page', note: `This model is built for <strong>${esc(m.lib)}</strong>, not diffusers: follow the usage on <a href="https://huggingface.co/${esc(m.id)}" rel="noopener">its model card</a>.` });
+      out.push({ label: 'ComfyUI', note: 'ComfyUI (and Draw Things on Mac) load most image models with a visual workflow editor.' });
     } else if (s.use === 'image') {
       out.push({ label: 'Python', code: `pip install diffusers transformers torch\npython -c "from diffusers import DiffusionPipeline as P; P.from_pretrained('${m.id}').to('${b.kind === 'mac' ? 'mps' : 'cuda'}')('a lighthouse at dawn').images[0].save('out.png')"` });
       out.push({ label: 'ComfyUI', note: 'ComfyUI (and Draw Things on Mac) load most of these models with a visual workflow editor.' });

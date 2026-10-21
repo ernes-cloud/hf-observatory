@@ -35,6 +35,7 @@ let shown = PAGE;
 let compare = new Set();
 const cardOpts = new Map(); // model id → per-model options from the Customize panel
 const openCfg = new Set(); // model ids whose Customize panel is open
+const cardCmds = new Map(); // run-tab contents per card, drawn on demand
 const favUi = { open: false, editing: null, confirm: null, msg: '', shared: null }; // saved-compose panel state
 let els = {};
 
@@ -414,6 +415,7 @@ function resultCard(r, i) {
   const sp = fit.tps != null ? speedLabel(fit.tps) : null;
   const lf = LICENSE_FAMILY[m.lf];
   const cmds = commandsFor(r, state, b, A.caps, custom, r.specs, isLLMCard ? stackPicks() : null);
+  cardCmds.set(`cmd-${i}`, cmds); // other tabs are drawn when opened
   const id = `cmd-${i}`;
   return `<article class="advice" data-id="${esc(m.id)}">
     <div class="advice-head">
@@ -435,6 +437,7 @@ function resultCard(r, i) {
         ${isLLMCard ? `<button type="button" class="btn cfg-toggle" aria-expanded="${openCfg.has(m.id)}">${custom ? 'Customized ✓' : 'Customize'}</button>` : ''}
       </div>
     </div>
+    ${m.ev || m.mteb ? `<p class="note evals" title="Numbers the model's developers published on its model card; they are not measured by this site and are not comparable across different test setups">Reported by its developers: ${[...(m.ev || []).map(([d, metric, v]) => `${esc(d)}${metric ? ` · ${esc(metric)}` : ''} <strong>${v}</strong>`), m.mteb ? `MTEB results on ${m.mteb >= 50 ? '50+' : m.mteb} tasks (see the model card)` : ''].filter(Boolean).join(' · ')}</p>` : ''}
     ${isLLMCard && openCfg.has(m.id) ? cfgHtml(r, o, b) : ''}
     <div class="advice-metrics">
       <div class="metric fit-${status[0]}">
@@ -459,14 +462,43 @@ function resultCard(r, i) {
     </div>
     ${fit.low ? '<p class="note warn-note">This quantization loses noticeable quality; a smaller model at higher precision may answer better.</p>' : ''}
     ${r.why.length ? `<ul class="why">${r.why.slice(0, 5).map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    ${r.parts ? scoreHtml(r, i) : ''}
     ${cmds.length ? `<div class="run">
       <div class="run-tabs" role="tablist">${cmds.map((c, k) => `<button type="button" role="tab" class="run-tab" data-tab="${id}-${k}" aria-selected="${k === 0}">${esc(c.label)}</button>`).join('')}</div>
-      ${cmds.map((c, k) => `<div class="run-panel" id="${id}-${k}"${k ? ' hidden' : ''}>
-        ${c.code ? `<div class="code-row"><pre><code>${esc(c.code)}</code></pre><div class="code-actions"><button type="button" class="btn copy" data-copy="${esc(c.code)}">Copy</button>${c.yaml ? `<a class="btn" download="docker-compose.yml" href="data:text/yaml;charset=utf-8,${encodeURIComponent(c.code)}">Download</a><button type="button" class="btn fav-save" data-label="${esc(c.label)}" title="Keep this compose in your saved list to edit or reuse later">☆ Save</button>` : ''}</div></div>` : ''}
-        ${c.note ? `<p class="note">${c.note}</p>` : ''}
-      </div>`).join('')}
+      ${cmds.map((c, k) => (k ? `<div class="run-panel" id="${id}-${k}" hidden data-lazy></div>` : `<div class="run-panel" id="${id}-${k}">${panelHtml(c)}</div>`)).join('')}
     </div>` : ''}
   </article>`;
+}
+
+/** One run tab: the code with Copy / Download / Save, and its note. Copy and Download read the code from the page. */
+function panelHtml(c) {
+  return `${c.code ? `<div class="code-row"><pre><code>${esc(c.code)}</code></pre><div class="code-actions"><button type="button" class="btn copy">Copy</button>${c.yaml ? `<button type="button" class="btn dl">Download</button><button type="button" class="btn fav-save" data-label="${esc(c.label)}" title="Keep this compose in your saved list to edit or reuse later">☆ Save</button>` : ''}</div></div>` : ''}
+        ${c.note ? `<p class="note">${c.note}</p>` : ''}`;
+}
+
+/** Show a run tab, drawing its panel the first time. */
+function activateTab(run, tab) {
+  run.querySelectorAll('.run-tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
+  run.querySelectorAll('.run-panel').forEach((p) => {
+    p.hidden = p.id !== tab.dataset.tab;
+    if (!p.hidden && p.hasAttribute('data-lazy')) {
+      const [, i, k] = /^(cmd-\d+)-(\d+)$/.exec(p.id) || [];
+      const c = cardCmds.get(i)?.[+k];
+      if (c) p.innerHTML = panelHtml(c);
+      p.removeAttribute('data-lazy');
+    }
+  });
+}
+
+/** "Why #3": every term of the ranking score, as signed bars. */
+function scoreHtml(r, i) {
+  const rows = r.parts.filter(([, v]) => Math.abs(v) >= 0.05);
+  const max = Math.max(...rows.map(([, v]) => Math.abs(v)), 1);
+  return `<details class="score">
+    <summary>Why it ranks #${i + 1}: score ${r.score.toFixed(1)}</summary>
+    <ul class="score-list">${rows.map(([label, v]) => `<li class="${v < 0 ? 'neg' : 'pos'}"><span class="score-label">${esc(label)}</span><span class="score-bar"><span style="width:${((Math.abs(v) / max) * 100).toFixed(1)}%"></span></span><span class="score-val">${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(1)}</span></li>`).join('')}</ul>
+    <p class="note">Higher is better. The quality ↔ speed slider changes how much answer quality and speed weigh; your filters decide which models take part.</p>
+  </details>`;
 }
 
 /** Re-render one card in place (after a Customize change), keeping its open tab. */
@@ -479,10 +511,7 @@ function rerenderCard(id) {
   el.outerHTML = resultCard(els.lastList[i], i);
   const fresh = els.results.querySelector(`.advice[data-id="${CSS.escape(id)}"]`);
   const t = [...fresh.querySelectorAll('.run-tab')].find((x) => x.textContent === tab);
-  if (t) {
-    fresh.querySelectorAll('.run-tab').forEach((x) => x.setAttribute('aria-selected', String(x === t)));
-    fresh.querySelectorAll('.run-panel').forEach((p) => { p.hidden = p.id !== t.dataset.tab; });
-  }
+  if (t) activateTab(fresh.querySelector('.run'), t);
   if (focusKey) fresh.querySelector(`.cfg [data-k="${focusKey}"]`)?.focus();
 }
 
@@ -569,7 +598,7 @@ function refresh(resetPage = true) {
     : emptyHtml();
   els.more.hidden = list.length <= shown;
   els.compare.innerHTML = compareHtml(list);
-  if (!favUi.editing || !els.favs.firstChild) renderFavs(); // never throw away an edit in progress
+  if (!els.favs.firstChild) renderFavs(); // drawn once; fav actions redraw it (and never mid-edit)
 }
 
 /* --------------------------------------------------------------- full stack */
@@ -894,9 +923,7 @@ export async function render(section, params) {
   section.querySelector('.advisor-results').addEventListener('click', async (e) => {
     const tab = e.target.closest('.run-tab');
     if (tab) {
-      const run = tab.closest('.run');
-      run.querySelectorAll('.run-tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
-      run.querySelectorAll('.run-panel').forEach((p) => { p.hidden = p.id !== tab.dataset.tab; });
+      activateTab(tab.closest('.run'), tab);
       return;
     }
     if (e.target.id === 'a-clear-compare') { compare.clear(); refresh(false); return; }
@@ -919,10 +946,18 @@ export async function render(section, params) {
       rerenderCard(id);
       return;
     }
+    const dl = e.target.closest('.dl');
+    if (dl) {
+      const url = URL.createObjectURL(new Blob([dl.closest('.code-row').querySelector('code').textContent], { type: 'text/yaml' }));
+      const a = Object.assign(document.createElement('a'), { href: url, download: 'docker-compose.yml' });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return;
+    }
     const b = e.target.closest('.copy');
     if (!b) return;
-    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = 'Copied'; } catch (err) {
-      const pre = b.previousElementSibling;
+    try { await navigator.clipboard.writeText(b.closest('.code-row').querySelector('code').textContent); b.textContent = 'Copied'; } catch (err) {
+      const pre = b.closest('.code-row').querySelector('pre');
       const range = document.createRange(); range.selectNodeContents(pre);
       const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
       b.textContent = 'Press Ctrl+C';

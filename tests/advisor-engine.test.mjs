@@ -224,3 +224,15 @@ test('two different cards: llama.cpp uses all their memory, vLLM counts every ca
   const small = budgetOf({ ...s, gpu2: 'rtx-4060-ti-16-gb', runtime: 'vllm' });
   assert.ok(small.fast < 2 * 16);
 });
+
+test('speech and image commands follow the library the model is built for', async () => {
+  const { budgetOf } = await import('../web/js/advisor/engine.js');
+  const { commandsFor } = await import('../web/js/advisor/commands.js');
+  const s = { ...base, use: 'asr' };
+  const b = budgetOf(s);
+  const r = (lib) => ({ m: { id: 'nvidia/parakeet-tdt-0.6b-v3', caps: 0, lib }, fit: { quant: '16-bit' }, kind: 'st', specs: [] });
+  assert.match(commandsFor(r('nemo'), s, b, ['chat'], null)[0].code, /nemo_toolkit\[asr\][\s\S]*ASRModel\.from_pretrained\('nvidia\/parakeet-tdt-0\.6b-v3'\)/);
+  assert.match(commandsFor(r('transformers'), s, b, ['chat'], null)[0].code, /pipeline\('automatic-speech-recognition'/);
+  const other = commandsFor(r('pyannote-audio'), s, b, ['chat'], null)[0];
+  assert.ok(!other.code && /pyannote-audio/.test(other.note));
+});

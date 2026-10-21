@@ -9,6 +9,7 @@ are attached to the model they quantize as "how to run it".
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from collections import defaultdict
@@ -95,6 +96,51 @@ KNOWN_ACTIVE = [
 
 # Size written in the name ("…-35B", "…-1.5B", "…-270M"); not the active size of "A3B" or the expert size of "8x7B".
 NAMED_SIZE_RX = re.compile(r"(?:^|[-_/. ])(\d+(?:\.\d+)?)([bm])(?=$|[-_. ])", re.I)
+# Labs whose model-card results are shown: anyone can write numbers in a model card, so only the
+# original developers' own reports are used, and only for benchmarks people recognise.
+LABS = {
+    "qwen", "meta-llama", "mistralai", "google", "microsoft", "deepseek-ai", "openai", "nvidia", "zai-org", "ibm-granite",
+    "huggingfacetb", "allenai", "liquidai", "moonshotai", "minimaxai", "tencent", "baidu", "coherelabs", "stepfun-ai",
+    "xiaomimimo", "openbmb", "inclusionai", "baai", "intfloat", "nomic-ai", "jinaai", "mixedbread-ai", "alibaba-nlp",
+    "sentence-transformers", "kyutai", "hexgrad", "canopylabs", "resemble-ai", "apple", "black-forest-labs", "stabilityai",
+}
+KNOWN_EVAL = re.compile(
+    r"mmlu|gpqa|livecodebench|swe-?bench|aime|humaneval|mbpp|math|ifeval|bfcl|tau|arena|mmmu|ocrbench|chartqa|docvqa|"
+    r"mathvista|screenspot|ai2d|librispeech|fleurs|\bami\b|earnings|gigaspeech|tedlium|vox ?populi|spgi|beir|miracl",
+    re.I)
+
+
+def evals_of(m: dict) -> dict:
+    ev, mteb, wer = published_evals(m)
+    return {k: v for k, v in (("ev", ev or None), ("mteb", mteb or None), ("wer", wer)) if v is not None}
+
+
+def published_evals(m: dict) -> tuple[list, int, float | None]:
+    """(up to 4 [dataset, metric, value] the lab reported, number of MTEB tasks, WER on LibriSpeech clean)."""
+    if (m["author"] or "").lower() not in LABS or not m.get("benchmarks_json"):
+        return [], 0, None
+    try:
+        rows = json.loads(m["benchmarks_json"]) or []
+    except ValueError:
+        return [], 0, None
+    keep, seen, mteb, wer = [], set(), 0, None
+    for b in rows:
+        ds = str(b.get("dataset") or "").strip()
+        v = b.get("value")
+        if not ds or not isinstance(v, (int, float)) or isinstance(v, bool) or not (0 <= v <= 1000):
+            continue
+        if ds.lower().startswith("mteb"):
+            mteb += 1
+            continue
+        metric = str(b.get("metric") or "").strip()[:40] or None
+        if re.search(r"librispeech.*clean|clean.*librispeech", ds, re.I) and metric and "wer" in metric.lower() and wer is None:
+            wer = round(float(v), 2)
+        if KNOWN_EVAL.search(ds) and ds.lower() not in seen and len(keep) < 4:
+            seen.add(ds.lower())
+            keep.append([ds[:48], metric, round(float(v), 2)])
+    return keep, mteb, wer
+
+
 # Official GGUF builds the dataset does not track (below its popularity cut-off) but every guide uses.
 CANONICAL_GGUF = {
     "openai/gpt-oss-120b": "ggml-org/gpt-oss-120b-GGUF",
@@ -145,7 +191,7 @@ def build(con, cache=None) -> dict:
         SELECT id, author, pipeline_tag AS task, license_family AS lf, license, parameters, family,
                languages, tags, formats, library, downloads_30d AS dl, likes, trending_score AS trend,
                is_conversational AS chat, gated, CAST(epoch(created_at) / 86400 AS INTEGER) AS created_day,
-               nullif(trim(base_model), '') AS base_model
+               nullif(trim(base_model), '') AS base_model, benchmarks_json
         FROM m WHERE NOT removed AND pipeline_tag IN ({", ".join(f"'{t}'" for t in sorted(USE_TASKS))})""")
 
     by_id = {m["id"].lower(): m for m in models}
@@ -312,6 +358,9 @@ def build(con, cache=None) -> dict:
             "q": quants or None,
             "mtp": mtp or None,
             "kvf": kv_factor(tags_l),
+            **evals_of(m),
+            # library decides how a speech / image model is loaded (NeMo, diffusers, transformers…)
+            **({"lib": m["library"]} if m["task"] not in ("text-generation", "image-text-to-text", "any-to-any") and m["library"] else {}),
             "gmtp": gguf_mtp,
             "dr": [{"id": d["id"], "m": d["method"], "g": d["gguf"], "p": d["p"]} for d in my_drafts[:4]] or None,
             # for re-uploads whose original is not tracked: show what they quantize

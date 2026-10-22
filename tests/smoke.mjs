@@ -173,6 +173,23 @@ await checkViewport('mobile', { width: 375, height: 760 }, 'light');
   await ctx.close();
 }
 
+// Navigating again while a section is still loading: the newest page wins, no error.
+{
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  const errs = [];
+  page.on('pageerror', (e) => errs.push(e.message));
+  await page.route(/data\/models\//, async (route) => { await new Promise((ok) => setTimeout(ok, 400)); await route.continue(); });
+  await page.goto(`${base}#about`, { waitUntil: 'networkidle' });
+  const [a, b] = await page.evaluate(async () => (await (await fetch('data/search.json')).json()).models.slice(0, 2));
+  await page.evaluate((id) => { location.hash = `#model?id=${id}`; }, a);
+  await page.evaluate((id) => { location.hash = `#model?id=${id}`; }, b);
+  await page.waitForFunction((id) => document.querySelector('#h-model')?.textContent === id, b, { timeout: 20000 })
+    .catch(() => failures.push('router: a second model chosen while the first was loading was not shown'));
+  for (const e of errs) failures.push(`router: ${e}`);
+  await ctx.close();
+}
+
 // Other views respond: graveyard filter, newsletter issue switch, family tree picked by name.
 {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });

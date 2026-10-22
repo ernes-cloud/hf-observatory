@@ -41,6 +41,7 @@ const TITLES = {
 
 let previous = null;
 const rendered = new Map(); // view → module (rendered once, then `update` on param change)
+const pending = new Map(); // view → parameters that arrived while its first render was running
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -68,6 +69,8 @@ async function route() {
   previous = name;
   if (rendered.has(name)) {
     const mod = rendered.get(name);
+    // Still loading: the newest parameters are applied once the first render is done.
+    if (!mod) { pending.set(name, params); return; }
     if (mod.update) mod.update(section, params);
     return;
   }
@@ -78,6 +81,9 @@ async function route() {
     const mod = await import(attempt ? `${VIEWS[name]}?retry=${attempt}` : VIEWS[name]);
     await mod.render(section, params);
     rendered.set(name, mod);
+    const later = pending.get(name);
+    pending.delete(name);
+    if (later && later.toString() !== params.toString() && mod.update) await mod.update(section, later);
     // move keyboard and screen-reader focus to the new page's heading
     const h1 = moved && section.querySelector('h1');
     if (h1) { h1.setAttribute('tabindex', '-1'); h1.focus({ preventScroll: true }); }

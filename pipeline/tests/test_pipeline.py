@@ -320,6 +320,7 @@ def test_sizes_from_names():
 
 QUALITY_FIXTURE = [
     model("Qwen/Qwen3-8B", downloads_30d=1000, likes=50, tags=["text-generation"], languages=["en"]),
+    model("someone/qwen-tune", base_model="Qwen/Qwen3-8B", downloads_30d=200, likes=2),
     model("lab/real-model", downloads_30d=5000, likes=12),
     model("sweeper/run-seed42", downloads_30d=3, likes=0),
     model("student/ppo-LunarLander-v2", downloads_30d=40, likes=1),
@@ -354,7 +355,7 @@ def test_noise_copies_and_removals(built_quality):
     t = ov["totals"]
     assert t["noise"] == 3 and t["signal"] == t["live"] - 3
     # the copied 2.79M counts once in the totals
-    assert t["downloads_30d"] == 1000 + 5000 + 3 + 40 + 0 + 2_788_283 + 500 + 900_000
+    assert t["downloads_30d"] == 1000 + 200 + 5000 + 3 + 40 + 0 + 2_788_283 + 500 + 900_000
     by_author = {o["author"]: o for o in ov["top_orgs_by_downloads"]}
     assert by_author["dup"]["downloads"] == 2_788_283
     assert "sweeper" not in {o["author"] for o in ov["top_orgs_by_count"]}

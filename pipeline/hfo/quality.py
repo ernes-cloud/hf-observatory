@@ -22,7 +22,10 @@ The radar copies what the Hub reports, and some of it misleads when counted naiv
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import tempfile
 
 from .families import family_case_sql
 
@@ -98,20 +101,25 @@ TASK_RX = r"^[a-z0-9]+(-[a-z0-9]+)*$"
 def apply(con, snapshot_at: str) -> dict:
     """Rewrite table ``m`` in place with the corrected columns plus ``noise``, ``dl``,
     ``removal_kind`` and ``successor``. Returns counts for the build log and meta.json."""
-    con.create_function("hfo_license_class", license_class, ["VARCHAR"], "VARCHAR", null_handling="special")
-    con.create_function("hfo_fixed_params", fixed_params, ["VARCHAR", "BIGINT"], "BIGINT", null_handling="special")
+    # The rules live in Python (and are unit-tested there); their results join back as tables.
+    lic = [(x, license_class(x)) for (x,) in con.execute("SELECT DISTINCT license FROM m").fetchall()]
+    _table(con, "lic_class", ["license VARCHAR", "cls VARCHAR"], lic)
+    sizes = [(i, fixed_params(i, p)) for i, p in con.execute("SELECT id, parameters FROM m").fetchall()]
+    _table(con, "size_fix", ["id VARCHAR", "p BIGINT"], [(i, p) for (i, p), (_, old) in
+                                                           zip(sizes, con.execute("SELECT id, parameters FROM m").fetchall()) if p != old])
     now = f"TIMESTAMPTZ '{snapshot_at}'"
     name = "lower(split_part(id, '/', 2))"
     con.execute(f"""
         CREATE OR REPLACE TABLE m AS
         WITH base AS (
-            SELECT * REPLACE (
-                       hfo_license_class(license) AS license_family,
-                       hfo_fixed_params(id, parameters) AS parameters,
-                       CASE WHEN regexp_matches(pipeline_tag, '{TASK_RX}') THEN pipeline_tag END AS pipeline_tag,
-                       {family_case_sql()} AS family),
-                   parameters AS parameters_reported
-            FROM m
+            SELECT m.* REPLACE (
+                       coalesce(lic_class.cls, 'unknown') AS license_family,
+                       coalesce(size_fix.p, m.parameters) AS parameters,
+                       CASE WHEN regexp_matches(m.pipeline_tag, '{TASK_RX}') THEN m.pipeline_tag END AS pipeline_tag,
+                       {family_case_sql('m.id', 'm.base_model')} AS family),
+                   m.parameters AS parameters_reported
+            FROM m LEFT JOIN lic_class ON lic_class.license IS NOT DISTINCT FROM m.license
+                   LEFT JOIN size_fix ON size_fix.id = m.id
         ), flagged AS (
             SELECT *,
                    (coalesce(likes, 0) < 10 AND (regexp_matches({name}, '{SWEEP_RX}')
@@ -135,6 +143,22 @@ def apply(con, snapshot_at: str) -> dict:
                count(*) FILTER (WHERE license_family = 'conditional' AND NOT removed) AS conditional
         FROM m""").fetchone()
     return dict(zip(("noise", "copied_downloads", "copied_downloads_total", "params_fixed", "conditional"), stats))
+
+
+def _table(con, name: str, columns: list[str], rows: list[tuple]) -> None:
+    """A temp table from Python rows, via a JSON-lines file (no numpy / pandas needed)."""
+    cols = [c.split()[0] for c in columns]
+    con.execute(f"CREATE OR REPLACE TEMP TABLE {name} ({', '.join(columns)})")
+    if not rows:
+        return
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(dict(zip(cols, r))) + "\n")
+    try:
+        types = ", ".join(f"'{c.split()[0]}': '{c.split()[1]}'" for c in columns)
+        con.execute(f"INSERT INTO {name} SELECT {', '.join(cols)} FROM read_json('{fh.name}', columns={{{types}}})")
+    finally:
+        os.unlink(fh.name)
 
 
 def _classify_removals(con) -> None:

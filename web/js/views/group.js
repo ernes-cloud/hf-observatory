@@ -21,7 +21,7 @@ export function renderGroup(kind) {
       return;
     }
     section.innerHTML = '<p class="loading" role="status">Loading…</p>';
-    const D = await loadFinder();
+    const D = await loadFinder({ full: true });
     const c = D.cols;
     const famIdx = kind === 'family' ? D.dict.family.findIndex((f) => f.toLowerCase() === name.toLowerCase()) : -1;
     const prefix = `${name.toLowerCase()}/`;

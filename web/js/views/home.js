@@ -18,7 +18,9 @@ async function optional(name) {
 }
 
 export async function render(section) {
-  const [ov, tr, fam, nl] = await Promise.all([load('overview.json'), optional('trends.json'), optional('families/index.json'), optional('newsletter/index.json')]);
+  // Every input is optional: a missing file leaves its numbers as "–" instead of breaking the page.
+  const [ovRaw, tr, fam, nl] = await Promise.all([optional('overview.json'), optional('trends.json'), optional('families/index.json'), optional('newsletter/index.json')]);
+  const ov = ovRaw || { totals: {}, top_orgs_by_downloads: [], families: [] };
   const t = ov.totals;
   const w7 = tr?.windows?.['7'] || tr?.windows?.[Object.keys(tr?.windows || {})[0]];
   const riser = w7?.rising?.[0];

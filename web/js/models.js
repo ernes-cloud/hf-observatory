@@ -21,29 +21,47 @@ export async function loadModel(id) {
 }
 
 let finder = null;
-/** The finder index, decoded once and shared by the finder, model, publisher and family pages. */
-export function loadFinder() {
+let complete = null;
+/**
+ * The finder index, decoded once and shared by the finder, model, publisher and family pages.
+ * finder.json holds the models with 100+ downloads (a prefix of the list, which is sorted by
+ * downloads); loadFinder({ full: true }) also appends the long tail from finder-rest.json.
+ */
+export function loadFinder({ full = false } = {}) {
   if (!finder) {
     finder = load('finder.json').then((raw) => {
-      const c = raw.cols;
-      const n = raw.count;
-      const idLower = new Array(n);
-      const baseLower = new Array(n);
-      const rowOf = new Map();
-      for (let i = 0; i < n; i++) {
-        idLower[i] = c.id[i].toLowerCase();
-        baseLower[i] = c.base[i] >= 0 ? raw.dict.base_model[c.base[i]].toLowerCase() : '';
-        rowOf.set(idLower[i], i);
-      }
-      const taskCounts = new Array(raw.dict.task.length).fill(0);
-      c.task.forEach((t) => { if (t >= 0) taskCounts[t]++; });
-      const langCounts = new Array(raw.dict.language.length).fill(0);
-      c.lang.forEach((ls) => ls.forEach((l) => langCounts[l]++));
-      return { ...raw, n, idLower, baseLower, rowOf, taskCounts, langCounts };
+      const D = { ...raw, n: 0, cols: Object.fromEntries(Object.keys(raw.cols).map((k) => [k, []])), idLower: [], baseLower: [],
+        rowOf: new Map(), taskCounts: new Array(raw.dict.task.length).fill(0), langCounts: new Array(raw.dict.language.length).fill(0),
+        total: raw.total ?? raw.count };
+      append(D, raw);
+      D.complete = D.n >= D.total;
+      return D;
     });
     finder.catch(() => { finder = null; });
   }
-  return finder;
+  if (!full) return finder;
+  if (!complete) {
+    complete = finder.then(async (D) => {
+      if (!D.complete) { append(D, await load('finder-rest.json')); D.complete = true; }
+      return D;
+    });
+    complete.catch(() => { complete = null; });
+  }
+  return complete;
+}
+
+function append(D, part) {
+  const c = part.cols;
+  for (const k of Object.keys(D.cols)) for (const v of c[k] || []) D.cols[k].push(v);
+  for (let j = 0; j < part.count; j++) {
+    const i = D.n + j;
+    D.idLower[i] = c.id[j].toLowerCase();
+    D.baseLower[i] = c.base[j] >= 0 ? D.dict.base_model[c.base[j]].toLowerCase() : '';
+    D.rowOf.set(D.idLower[i], i);
+    if (c.task[j] >= 0) D.taskCounts[c.task[j]]++;
+    for (const l of c.lang[j]) D.langCounts[l]++;
+  }
+  D.n += part.count;
 }
 
 /* ---------- compare list (up to 4 models, kept in localStorage) ---------- */

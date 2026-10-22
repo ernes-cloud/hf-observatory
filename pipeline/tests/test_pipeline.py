@@ -69,7 +69,10 @@ def test_overview_totals(built):
 
 def test_finder_index(built):
     f = json.loads((built / "finder.json").read_text())
-    assert f["count"] == 4
+    rest = json.loads((built / "finder-rest.json").read_text())
+    assert f["total"] == 4 and f["count"] == 1 and rest["count"] == 3  # only Qwen has 100+ downloads
+    f["cols"] = {c: v + rest["cols"][c] for c, v in f["cols"].items()}
+    assert f["count"] + rest["count"] == 4
     ids = f["cols"]["id"]
     assert ids[0] == "Qwen/Qwen3-8B"  # sorted by downloads
     gguf = ids.index("quant/Qwen3-8B-GGUF")
@@ -365,6 +368,8 @@ def test_noise_copies_and_removals(built_quality):
                      "tester/scratch": "cleanup"}
     assert [m["id"] for m in g["notable"]] == ["copycat/DeepSeek-V4.1-Flash"]
     f = json.loads((built_quality / "finder.json").read_text())
+    rest = json.loads((built_quality / "finder-rest.json").read_text())
+    f["cols"] = {c: v + rest["cols"][c] for c, v in f["cols"].items()}
     noisy = {f["cols"]["id"][i] for i, fl in enumerate(f["cols"]["flags"]) if fl & f["flags"]["noise"]}
     assert noisy == {"sweeper/run-seed42", "student/ppo-LunarLander-v2", "quiet/never-used"}
 

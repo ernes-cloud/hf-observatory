@@ -134,7 +134,7 @@ function formHtml() {
     <p class="presets-label" id="hw-presets-label">Quick start with a typical machine</p>
     <div class="presets" role="group" aria-labelledby="hw-presets-label">${PRESETS.map((p, i) => `<button type="button" class="preset" data-preset="${i}">${esc(p.label)}</button>`).join('')}</div>
   </div>
-  <form class="advisor-form" id="advisor-form" onsubmit="return false">
+  <form class="advisor-form" id="advisor-form">
     <fieldset class="step">
       <legend><span class="step-n">1</span> What will you use it for?</legend>
       <div class="use-grid">${USES.map((u) => `<label class="use-option"><input type="radio" name="use" value="${u.v}"><span class="use-label">${esc(u.label)}</span><span class="use-hint">${esc(u.hint)}</span></label>`).join('')}</div>
@@ -513,7 +513,7 @@ function costHtml(m, fit, b, users) {
 /** One run tab: the code with Copy / Download / Save, and its note. Copy and Download read the code from the page. */
 function panelHtml(c) {
   const lines = c.code ? c.code.split('\n').length : 0;
-  return `${c.code ? `<div class="code-row"><pre${lines > 22 ? ' class="long"' : ''}><code>${esc(c.code)}</code>${lines > 22 ? `<button type="button" class="btn code-more">Show all ${lines} lines</button>` : ''}</pre><div class="code-actions"><button type="button" class="btn copy">Copy</button>${c.yaml ? `<button type="button" class="btn dl">Download</button><button type="button" class="btn fav-save" data-label="${esc(c.label)}" title="Keep this compose in your saved list to edit or reuse later">☆ Save</button>` : ''}</div></div>` : ''}
+  return `${c.code ? `<div class="code-row"><pre tabindex="0"${lines > 22 ? ' class="long"' : ''}><code>${esc(c.code)}</code>${lines > 22 ? `<button type="button" class="btn code-more">Show all ${lines} lines</button>` : ''}</pre><div class="code-actions"><button type="button" class="btn copy">Copy</button>${c.yaml ? `<button type="button" class="btn dl">Download</button><button type="button" class="btn fav-save" data-label="${esc(c.label)}" title="Keep this compose in your saved list to edit or reuse later">☆ Save</button>` : ''}</div></div>` : ''}
         ${c.note ? `<p class="note">${c.note}</p>` : ''}`;
 }
 
@@ -729,6 +729,17 @@ function emptyHtml() {
 const shortRuntime = (label) => label.replace(/\s*\(Docker Compose\)/, '').replace(' (pip)', '');
 const when = (t) => new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
+// Settings in a shared compose that give a container power over the host.
+const RISKY = [
+  [/^\s*privileged:\s*true/m, 'privileged mode'],
+  [/docker\.sock/, 'the Docker socket'],
+  [/^\s*(network_mode|pid|ipc):\s*["']?host/m, 'the host network or processes'],
+  [/^\s*cap_add:/m, 'extra Linux capabilities'],
+  [/^\s*-\s*["']?\/(etc|root|home|var|usr|boot|proc|sys)?(:|\/[^:]*:)/m, 'a host system folder mounted inside'],
+  [/curl[^\n|]*\|\s*(ba|z)?sh/, 'a script piped from the internet'],
+];
+const riskyBits = (yaml) => RISKY.filter(([rx]) => rx.test(yaml || '')).map(([, label]) => label);
+
 function favHtml(f) {
   const editing = favUi.editing === f.id;
   const issues = editing ? lintCompose(f.yaml) : [];
@@ -750,7 +761,7 @@ function favHtml(f) {
         </div>
       </div>`
     : `${f.note ? `<p class="fav-notes">${esc(f.note)}</p>` : ''}
-      <details class="fav-preview"><summary>Show the file</summary><pre><code>${esc(f.yaml)}</code></pre></details>
+      <details class="fav-preview"><summary>Show the file</summary><pre tabindex="0"><code>${esc(f.yaml)}</code></pre></details>
       <div class="fav-actions">
         <button type="button" class="btn" data-fav-act="edit">Edit</button>
         ${f.params ? '<button type="button" class="btn" data-fav-act="open" title="Load the machine and settings it was made with, and its Customize options">Open in the advisor</button>' : ''}
@@ -779,7 +790,8 @@ function drawFavs() {
     ${favUi.shared ? `<div class="fav-shared" role="region" aria-label="Shared compose">
       <p><strong>Shared with you:</strong> “${esc(favUi.shared.name)}” · <a href="${esc(hfUrl(favUi.shared.model))}" rel="noopener">${esc(favUi.shared.model)}</a> · ${esc(shortRuntime(favUi.shared.runtime))}${favUi.shared.machine ? ` · ${esc(favUi.shared.machine)}` : ''}</p>
       ${favUi.shared.note ? `<p class="fav-notes">${esc(favUi.shared.note)}</p>` : ''}
-      <details class="fav-preview"><summary>Show the file</summary><pre><code>${esc(favUi.shared.yaml)}</code></pre></details>
+      <p class="note warn">This file arrived with a link: anyone can edit a shared compose before sending it. Read it before you run it.${riskyBits(favUi.shared.yaml).length ? ` <strong>It asks for: ${esc(riskyBits(favUi.shared.yaml).join(', '))}.</strong>` : ''}</p>
+      <details class="fav-preview"><summary>Show the file</summary><pre tabindex="0"><code>${esc(favUi.shared.yaml)}</code></pre></details>
       <div class="fav-actions"><button type="button" class="btn btn-primary" data-fav-act="shared-save">Save to my composes</button><button type="button" class="btn" data-fav-act="shared-dismiss">Dismiss</button></div>
     </div>` : ''}
     ${list.length ? `<ul class="fav-list">${list.map(favHtml).join('')}</ul>`
@@ -837,7 +849,7 @@ function openFavorite(f) {
   const t = [...card.querySelectorAll('.run-tab')].find((x) => x.textContent === f.runtime);
   if (t) t.click();
   card.classList.add('flash');
-  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  card.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
   setTimeout(() => card.classList.remove('flash'), 2000);
 }
 
@@ -975,6 +987,8 @@ export async function render(section, params) {
     advSum: section.querySelector('#a-adv-sum'),
     o: { size: section.querySelector('#o-size'), ctx: section.querySelector('#o-ctx'), users: section.querySelector('#o-users'), pr: section.querySelector('#o-pr') },
   };
+  els.form.addEventListener('submit', (e) => e.preventDefault());
+
   // "More settings" stays as the visitor left it; a shared link with such settings opens it
   const adv = section.querySelector('#a-adv');
   const advKeys = ['runtime', 'spec', 'think', 'kv', 'ctx', 'users', 'sizeLo', 'sizeHi', 'priority', 'archFilter', 'must', 'lang', 'commercial', 'officialOnly', 'hideGated', 'uncensored'];
@@ -993,7 +1007,7 @@ export async function render(section, params) {
     const io = new IntersectionObserver(([e]) => { jump.hidden = e.isIntersecting || section.hidden; }, { threshold: 0 });
     io.observe(resultsEl);
   }
-  jump.addEventListener('click', () => resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  jump.addEventListener('click', () => resultsEl.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }));
 
   let timer;
   const onChange = (e) => {

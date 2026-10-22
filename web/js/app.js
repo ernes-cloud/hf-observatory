@@ -23,6 +23,14 @@ const VIEWS = {
   family: './views/family.js',
   compare: './views/compare.js',
 };
+// Data each view needs first: fetched in parallel with the view's code instead of after it.
+const PREFETCH = {
+  home: ['overview.json', 'trends.json', 'families/index.json', 'newsletter/index.json'],
+  overview: ['overview.json'], finder: ['finder.json'], advisor: ['advisor.json'], trends: ['trends.json'],
+  families: ['families/index.json'], graveyard: ['graveyard.json'], newsletter: ['newsletter/index.json'],
+  model: ['models/index.json'], org: ['finder.json'], family: ['finder.json'], compare: ['models/index.json'],
+};
+let attempt = 0; // a failed dynamic import is remembered by the browser: retries use a fresh URL
 // Pages reached from links rather than the tab bar: the tab of the section they belong to stays lit.
 const PARENT_TAB = { model: 'finder', org: 'overview', family: 'overview', compare: 'finder' };
 const TITLES = {
@@ -44,11 +52,17 @@ async function route() {
   if (unknown) history.replaceState(null, '', '#home');
   document.querySelectorAll('.view').forEach((s) => { s.hidden = s.id !== `view-${name}`; });
   document.querySelectorAll('.tabs a').forEach((a) => {
-    if (a.dataset.view === (PARENT_TAB[name] || name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    if (a.dataset.view === (PARENT_TAB[name] || name)) {
+      a.setAttribute('aria-current', 'page');
+      // on phones the tab bar scrolls sideways: keep the current section in view
+      const bar = a.parentElement;
+      if (bar.scrollWidth > bar.clientWidth) bar.scrollTo({ left: a.offsetLeft - (bar.clientWidth - a.offsetWidth) / 2 });
+    } else a.removeAttribute('aria-current');
   });
   document.title = name === 'home' ? 'HF Observatory' : `${TITLES[name]} · HF Observatory`;
   const section = document.getElementById(`view-${name}`);
   hideTip();
+  const moved = previous !== null && previous !== name;
   if (previous !== name) window.scrollTo(0, 0);
   previous = name;
   if (rendered.has(name)) {
@@ -58,14 +72,20 @@ async function route() {
   }
   rendered.set(name, null);
   section.innerHTML = '<p class="loading" role="status">Loading…</p>';
+  for (const f of PREFETCH[name] || []) load(f).catch(() => {}); // errors surface where the view awaits them
   try {
-    const mod = await import(VIEWS[name]);
+    const mod = await import(attempt ? `${VIEWS[name]}?retry=${attempt}` : VIEWS[name]);
     await mod.render(section, params);
     rendered.set(name, mod);
+    // move keyboard and screen-reader focus to the new page's heading
+    const h1 = moved && section.querySelector('h1');
+    if (h1) { h1.setAttribute('tabindex', '-1'); h1.focus({ preventScroll: true }); }
   } catch (err) {
     rendered.delete(name);
     console.warn(err);
-    section.innerHTML = `<p class="error" role="alert">Something went wrong loading this section: ${esc(err.message)}</p>`;
+    section.innerHTML = `<div class="error" role="alert"><p>Something went wrong loading this section: ${esc(err.message)}</p>
+      <p>${navigator.onLine === false ? 'You seem to be offline. ' : ''}<button type="button" class="btn" data-retry>Try again</button></p></div>`;
+    section.querySelector('[data-retry]').addEventListener('click', () => { attempt++; route(); });
   }
 }
 
@@ -128,6 +148,11 @@ function initCompareTray() {
   onCompareChange(paint);
   window.addEventListener('hashchange', () => paint());
   paint();
+}
+
+// Repeat visits and offline use (sw.js). Skipped under automation so tests always see the network.
+if ('serviceWorker' in navigator && !navigator.webdriver) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
 
 initTheme();

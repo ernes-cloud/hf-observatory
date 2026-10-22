@@ -40,6 +40,11 @@ if (!base) {
   base = `http://127.0.0.1:${server.address().port}/`;
 }
 
+// Accessibility: axe-core (WCAG 2 A/AA rules) on every view; serious and critical findings fail.
+// Injected through the DevTools protocol, which the page's Content-Security-Policy does not block.
+let axeSource = null;
+try { axeSource = await readFile(require.resolve('axe-core/axe.min.js'), 'utf8'); } catch { console.log('  (axe-core not installed: accessibility checks skipped)'); }
+
 const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
 const failures = [];
 
@@ -47,11 +52,10 @@ async function checkViewport(name, viewport, theme) {
   const ctx = await browser.newContext({ viewport, colorScheme: theme, deviceScaleFactor: shotsDir ? 2 : 1 });
   const page = await ctx.newPage();
   const errors = [];
-  page.on('console', (m) => { if (m.type() === 'error' && !/fonts\.(googleapis|gstatic)/.test(m.text() + (m.location()?.url || ''))) errors.push(m.text()); });
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(e.message));
-  // Web fonts are optional (system fallbacks); anything else failing to load is an error.
-  const optional = (u) => /fonts\.(googleapis|gstatic)\.com/.test(u);
-  page.on('requestfailed', (r) => { if (!optional(r.url())) errors.push(`request failed: ${r.url()}`); });
+  // Everything is served by the site itself (fonts included): any failed request is an error.
+  page.on('requestfailed', (r) => errors.push(`request failed: ${r.url()}`));
   page.on('response', (r) => { if (r.status() >= 400) errors.push(`HTTP ${r.status()}: ${r.url()}`); });
 
   for (const view of VIEWS) {
@@ -71,6 +75,15 @@ async function checkViewport(name, viewport, theme) {
       h1: document.querySelector(`${s} h1`)?.textContent,
     }), sel);
     if (info.error) failures.push(`[${name}/${theme}] ${view}: ${info.error}`);
+    if (axeSource && name === 'desktop') {
+      await page.evaluate(axeSource);
+      const found = await page.evaluate(async (s) => {
+        const r = await window.axe.run(s, { runOnly: ['wcag2a', 'wcag2aa'] });
+        return r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')
+          .map((v) => `${v.id} (${v.nodes.length}): ${v.nodes[0]?.target.join(' ')}`);
+      }, sel);
+      for (const f of found) failures.push(`[${name}/${theme}] ${view}: axe ${f}`);
+    }
     if (info.overflow > 0) failures.push(`[${name}/${theme}] ${view}: horizontal overflow of ${info.overflow}px`);
     console.log(`  ${name.padEnd(7)} ${theme.padEnd(5)} ${view.padEnd(11)} ok  "${info.h1}"`);
     if (shotsDir && theme === 'light' && name === 'desktop') {
@@ -116,14 +129,22 @@ await checkViewport('mobile', { width: 375, height: 760 }, 'light');
   const page = await ctx.newPage();
   const errs = [];
   page.on('pageerror', (e) => errs.push(e.message));
+  const axe = async (view) => {
+    if (!axeSource) return;
+    await page.evaluate(axeSource);
+    const found = await page.evaluate(async (s) => (await window.axe.run(s, { runOnly: ['wcag2a', 'wcag2aa'] })).violations
+      .filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes[0]?.target.join(' ')}`), `#view-${view}`);
+    for (const f of found) failures.push(`${view} page: axe ${f}`);
+  };
   await page.goto(`${base}#finder`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('#f-results .model-card h3 a', { timeout: 20000 });
-  const first = await page.textContent('#f-results .model-card h3 a');
-  await page.click('#f-results .model-card h3 a');
+  await page.waitForSelector('#f-results .model-card h2 a', { timeout: 20000 });
+  const first = await page.textContent('#f-results .model-card h2 a');
+  await page.click('#f-results .model-card h2 a');
   await page.waitForSelector('#h-model', { timeout: 20000 });
   const title = (await page.textContent('#h-model')).trim();
   if (title !== first.trim()) failures.push(`model page: opened "${title}" from "${first}"`);
   await page.waitForSelector('#view-model .alt-list, #view-model .card .note', { timeout: 20000 });
+  await axe('model');
   await page.click('#view-model .hero-actions [data-compare]');
   const tray = await page.isVisible('#compare-tray');
   if (!tray) failures.push('compare: tray did not appear after "+ Compare"');
@@ -132,10 +153,12 @@ await checkViewport('mobile', { width: 375, height: 760 }, 'light');
   await page.waitForSelector('#h-org', { timeout: 20000 });
   const orgModels = await page.$$eval('#view-org .alt-list li', (x) => x.length);
   if (!orgModels) failures.push(`publisher page: no models listed for ${org}`);
+  await axe('org');
   await page.goto(`${base}#family?name=Qwen`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#h-family', { timeout: 20000 });
   await page.goto(`${base}#compare`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#view-compare table', { timeout: 20000 });
+  await axe('compare');
   await page.fill('#site-search-q', first.trim().split('/')[1].slice(0, 12));
   await page.waitForSelector('#site-search-list li', { timeout: 10000 });
   const suggestions = await page.$$eval('#site-search-list li', (x) => x.length);

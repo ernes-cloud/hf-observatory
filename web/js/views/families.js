@@ -12,6 +12,7 @@ const REL = {
   derivative: { label: 'Other derivatives', one: 'derivative', color: 'var(--muted)' },
 };
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const smooth = () => (matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
 
 let index = null;
 let explorer = null;
@@ -92,6 +93,7 @@ export async function render(section, params) {
         <datalist id="tree-bases">${withTree.map((b) => `<option value="${esc(b.id)}"></option>`).join('')}</datalist></div>
     </div>
     <div id="tree-summary"></div>
+    <p class="note phone-only">On a small screen the navigable list below replaces the graph.</p>
     <div class="graph-wrap" id="tree-graph"></div>
     <ul class="legend">${rels.map((r) => `<li><span class="swatch" style="background:${REL[r].color};border-radius:50%"></span>${REL[r].label}</li>`).join('')}</ul>
     <h3 style="margin:16px 0 6px">Navigable tree</h3>
@@ -134,12 +136,21 @@ function makeExplorer(root) {
   });
 
   async function select(idx, scroll) {
-    if (idx === current) { if (scroll) root.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    if (idx === current) { if (scroll) root.scrollIntoView({ behavior: smooth(), block: 'start' }); return; }
     current = idx;
     pick.value = String(idx);
     history.replaceState(null, '', `#families?tree=${encodeURIComponent(index.bases.find((x) => x.tree === idx)?.id ?? idx)}`);
     graphEl.innerHTML = '<p class="loading" style="padding:20px">Loading tree…</p>';
-    const data = await load(`families/tree-${idx}.json`);
+    let data;
+    try {
+      data = await load(`families/tree-${idx}.json`);
+    } catch (err) {
+      if (current !== idx) return;
+      current = null;
+      graphEl.innerHTML = `<p class="error" role="alert" style="padding:20px">Could not load this tree (${esc(err.message)}). <button type="button" class="btn">Try again</button></p>`;
+      graphEl.querySelector('button').addEventListener('click', () => select(idx, false));
+      return;
+    }
     if (current !== idx) return;
     const rels = data.relations;
     const b = data.base;
@@ -149,7 +160,7 @@ function makeExplorer(root) {
       <span class="note">${int(b.direct)} direct derivatives, ${int(b.descendants)} in total across ${b.depth} generation${b.depth === 1 ? '' : 's'}; they were downloaded ${compact(b.descendant_downloads)} times in the last 30 days.</span></p>`;
     drawGraph(graphEl, data.tree, rels, (node) => revealInList(node));
     listEl.replaceChildren(treeList(data.tree, rels));
-    if (scroll) root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (scroll) root.scrollIntoView({ behavior: smooth(), block: 'start' });
   }
 
   function revealInList(node) {
@@ -165,7 +176,7 @@ function makeExplorer(root) {
     const n = li.querySelector(':scope > .node');
     n.classList.add('flash');
     setTimeout(() => n.classList.remove('flash'), 1600);
-    n.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    n.scrollIntoView({ behavior: smooth(), block: 'center' });
     n.querySelector('a')?.focus({ preventScroll: true });
   }
   return { select };

@@ -381,3 +381,24 @@ def test_check_latest_refuses_broken_exports(tmp_path):
     check_latest(con, {"models": 900, "snapshot_at": "y"}, tmp_path)
     with pytest.raises(RuntimeError, match="partial"):
         check_latest(con, {"models": 500, "snapshot_at": "z"}, tmp_path)
+
+
+def test_model_shards_and_search(built):
+    from hfo.models import shard_of
+
+    index = json.loads((built / "models" / "index.json").read_text())
+    assert index["shards"] == 256
+    # same FNV-1a as web/js/models.js: 'qwen/qwen3-8b' → shard computed independently here
+    h = 0x811C9DC5
+    for ch in "qwen/qwen3-8b":
+        h = ((h ^ ord(ch)) * 0x01000193) & 0xFFFFFFFF
+    assert shard_of("Qwen/Qwen3-8B") == h % 256
+    shard = json.loads((built / "models" / f"{shard_of('Qwen/Qwen3-8B'):02x}.json").read_text())
+    rec = shard["qwen/qwen3-8b"]
+    assert rec["id"] == "Qwen/Qwen3-8B" and rec["fam"] == "Qwen"
+    assert rec["kids"] == {"finetune": 1, "quantized": 1}
+    gone = json.loads((built / "models" / f"{shard_of('gone/old-model'):02x}.json").read_text())["gone/old-model"]
+    assert gone["rm"] == "2026-10-15" and gone["rk"]
+    search = json.loads((built / "search.json").read_text())
+    assert search["models"][0] == "Qwen/Qwen3-8B"
+    assert ["Qwen", 1] in search["authors"] or any(a[0] == "Qwen" for a in search["authors"])

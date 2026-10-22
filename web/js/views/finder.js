@@ -1,7 +1,7 @@
-import { load } from '../data.js';
+import { bindCompareButtons, compareButton, loadFinder } from '../models.js';
 import { term } from '../glossary.js';
 import { pageHeader } from '../ui.js';
-import { compact, date, esc, FORMAT_LABEL, gigabytes, hfUrl, int, language, LICENSE_FAMILY, params as fmtParams, task } from '../format.js';
+import { compact, date, esc, familyHref, FORMAT_LABEL, gigabytes, hfUrl, int, language, LICENSE_FAMILY, modelHref, orgHref, params as fmtParams, task } from '../format.js';
 
 const PAGE = 24;
 const MEMORY_PRESETS = [
@@ -40,23 +40,6 @@ let D = null; // decoded index
 let state = null;
 let shown = PAGE;
 let els = {};
-
-function decode(raw) {
-  const c = raw.cols;
-  const n = raw.count;
-  const idLower = new Array(n);
-  const baseLower = new Array(n);
-  for (let i = 0; i < n; i++) {
-    idLower[i] = c.id[i].toLowerCase();
-    baseLower[i] = c.base[i] >= 0 ? raw.dict.base_model[c.base[i]].toLowerCase() : '';
-  }
-  // task / language option counts
-  const taskCounts = new Array(raw.dict.task.length).fill(0);
-  c.task.forEach((t) => { if (t >= 0) taskCounts[t]++; });
-  const langCounts = new Array(raw.dict.language.length).fill(0);
-  c.lang.forEach((ls) => ls.forEach((l) => langCounts[l]++));
-  return { ...raw, n, idLower, baseLower, taskCounts, langCounts };
-}
 
 function readState(p) {
   return {
@@ -180,7 +163,7 @@ function cardHtml(i) {
   if (c.flags[i] & 1) chips.push('<span class="chip gated">Gated</span>');
   const created = c.created[i] != null ? date(c.created[i] * DAY_MS) : null;
   return `<article class="model-card">
-    <h3><a href="${esc(hfUrl(id))}" rel="noopener"><span class="author">${esc(author)}/</span>${esc(rest.join('/'))}</a></h3>
+    <h3><a href="${esc(modelHref(id))}"><span class="author">${esc(author)}/</span>${esc(rest.join('/'))}</a></h3>
     <div class="chips">${chips.join('')}</div>
     <p class="summary">${esc(summary(i))}</p>
     <div class="model-stats">
@@ -188,6 +171,12 @@ function cardHtml(i) {
       <span><b>${compact(c.likes[i])}</b> likes</span>
       ${c.trend[i] ? `<span title="Hugging Face trending score"><b>${compact(c.trend[i])}</b> trending</span>` : ''}
       ${created ? `<span>created ${esc(created)}</span>` : ''}
+    </div>
+    <div class="card-links">
+      <a href="${esc(orgHref(author))}">${esc(author)}</a>
+      ${c.fam && c.fam[i] >= 0 ? `<a href="${esc(familyHref(D.dict.family[c.fam[i]]))}">${esc(D.dict.family[c.fam[i]])} family</a>` : ''}
+      <a href="${esc(hfUrl(id))}" rel="noopener">Hugging Face ↗</a>
+      ${compareButton(id)}
     </div>
   </article>`;
 }
@@ -251,7 +240,7 @@ function readForm() {
 }
 
 export async function render(section, params) {
-  D = decode(await load('finder.json'));
+  D = await loadFinder();
   const taskOpts = D.dict.task.map((t, i) => ({ t, n: D.taskCounts[i] })).sort((a, b) => b.n - a.n)
     .map(({ t, n }) => `<option value="${esc(t)}">${esc(task(t))} (${int(n)})</option>`).join('');
   const langOpts = D.dict.language.map((l, i) => ({ l, n: D.langCounts[i] })).filter((x) => x.n >= 5)
@@ -260,7 +249,7 @@ export async function render(section, params) {
 
   section.replaceChildren(pageHeader({
     id: 'h-finder', eyebrow: 'Model finder', title: 'Which model fits my needs?',
-    lead: `Search ${int(D.n)} live models. Pick a starting point below or set the filters yourself; every result links to the model's page on Hugging Face.`,
+    lead: `Search ${int(D.n)} live models. Pick a starting point below or set the filters yourself; every result opens its page here, with its history, family and alternatives.`,
     howTo: [
       `<strong>Task</strong> is what the model does (chat, transcribe audio, generate images…).`,
       `<strong>Max size</strong> uses the ${term('memory', 'estimated memory')} needed to load the model. Choose the memory of your GPU or Mac.`,
@@ -318,6 +307,7 @@ export async function render(section, params) {
     more: section.querySelector('#f-more'),
     moreBtn: section.querySelector('#f-more-btn'),
   };
+  bindCompareButtons(els.results);
   state = readState(params);
   syncForm();
   refresh();

@@ -2,6 +2,8 @@
 
 import { load } from './data.js';
 import { dateTime, esc } from './format.js';
+import { clearCompare, compareHref, compareList, onCompareChange } from './models.js';
+import { initSearch } from './search.js';
 import { GLOSSARY } from './glossary.js';
 import { hideTip, showTip } from './charts.js';
 
@@ -16,9 +18,16 @@ const VIEWS = {
   graveyard: './views/graveyard.js',
   newsletter: './views/newsletter.js',
   about: './views/about.js',
+  model: './views/model.js',
+  org: './views/org.js',
+  family: './views/family.js',
+  compare: './views/compare.js',
 };
+// Pages reached from links rather than the tab bar: the tab of the section they belong to stays lit.
+const PARENT_TAB = { model: 'finder', org: 'overview', family: 'overview', compare: 'finder' };
 const TITLES = {
   home: 'Home', overview: 'Overview', finder: 'Model finder', advisor: 'Model advisor', trends: 'Trends', families: 'Family trees', graveyard: 'Graveyard', newsletter: 'Newsletter', about: 'Help & glossary',
+  model: 'Model', org: 'Publisher', family: 'Family', compare: 'Compare',
 };
 
 let previous = null;
@@ -27,14 +36,15 @@ const rendered = new Map(); // view → module (rendered once, then `update` on 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
   const [name, query = ''] = raw.split('?');
-  return { name: VIEWS[name] ? name : 'home', params: new URLSearchParams(query) };
+  return { name: VIEWS[name] ? name : 'home', params: new URLSearchParams(query), unknown: !!name && !VIEWS[name] };
 }
 
 async function route() {
-  const { name, params } = parseHash();
+  const { name, params, unknown } = parseHash();
+  if (unknown) history.replaceState(null, '', '#home');
   document.querySelectorAll('.view').forEach((s) => { s.hidden = s.id !== `view-${name}`; });
   document.querySelectorAll('.tabs a').forEach((a) => {
-    if (a.dataset.view === name) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    if (a.dataset.view === (PARENT_TAB[name] || name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   document.title = name === 'home' ? 'HF Observatory' : `${TITLES[name]} · HF Observatory`;
   const section = document.getElementById(`view-${name}`);
@@ -105,8 +115,25 @@ function initGlossary() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTip(); });
 }
 
+/* Compare tray: a small bar while models wait to be compared. */
+function initCompareTray() {
+  const tray = document.getElementById('compare-tray');
+  const paint = (list = compareList()) => {
+    tray.hidden = !list.length || parseHash().name === 'compare';
+    tray.innerHTML = `<span><strong>${list.length}</strong> model${list.length === 1 ? '' : 's'} to compare</span>
+      <a class="btn btn-primary btn-small" href="${esc(compareHref(list))}">Compare</a>
+      <button type="button" class="btn btn-small" data-clear>Clear</button>`;
+  };
+  tray.addEventListener('click', (e) => { if (e.target.closest('[data-clear]')) clearCompare(); });
+  onCompareChange(paint);
+  window.addEventListener('hashchange', () => paint());
+  paint();
+}
+
 initTheme();
 initGlossary();
+initSearch(document.getElementById('site-search'));
+initCompareTray();
 initFreshness();
 window.addEventListener('hashchange', route);
 route();

@@ -24,7 +24,7 @@ export const dateTime = (d) => (d ? dateTimeFmt.format(toDate(d)) : '–');
 /** Parameters given in millions → "7.6B", "350M". */
 export function params(millions) {
   if (millions == null) return null;
-  if (millions >= 1000) {
+  if (millions >= 999.5) {
     const b = millions / 1000;
     return (b >= 100 ? Math.round(b) : b >= 10 ? b.toFixed(1).replace(/\.0$/, '') : b.toFixed(2).replace(/0$/, '').replace(/\.0$/, '')) + 'B';
   }
@@ -90,3 +90,15 @@ export function esc(s) {
 
 export const hfUrl = (id) => `https://huggingface.co/${id.split('/').map(encodeURIComponent).join('/')}`;
 export const authorUrl = (a) => `https://huggingface.co/${encodeURIComponent(a)}`;
+
+// Internal pages: every model, publisher and family name on the site links here first.
+export const modelHref = (id) => `#model?id=${encodeURIComponent(id)}`;
+export const orgHref = (a) => `#org?name=${encodeURIComponent(a)}`;
+export const familyHref = (f) => `#family?name=${encodeURIComponent(f)}`;
+export const finderHref = (params) => `#finder?${new URLSearchParams(params)}`;
+/** A model name as an internal link, the publisher part muted. */
+export function modelLink(id, { short = false } = {}) {
+  const [author, ...rest] = String(id).split('/');
+  const name = rest.length ? `${short ? '' : `<span class="author">${esc(author)}/</span>`}${esc(rest.join('/'))}` : esc(id);
+  return `<a href="${esc(modelHref(id))}" title="${esc(id)}">${name}</a>`;
+}

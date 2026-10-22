@@ -2,7 +2,7 @@ import { load } from '../data.js';
 import { term } from '../glossary.js';
 import { pageHeader } from '../ui.js';
 import { card, hideTip, showTip, stackedBarList, stats } from '../charts.js';
-import { compact, esc, hfUrl, int, params as fmtParams, pct, task } from '../format.js';
+import { compact, esc, familyHref, hfUrl, int, modelHref, params as fmtParams, pct, task } from '../format.js';
 
 const REL = {
   finetune: { label: 'Fine-tunes', one: 'fine-tune', color: 'var(--series-1)' },
@@ -60,7 +60,7 @@ export async function render(section, params) {
     sub: 'Live models that name this base directly. Select one to explore its tree.',
     body: stackedBarList(top.map((b) => ({ label: b.id, parts: rels.map((r) => b.by_relation[r]), base: b })), series, {
       onSelect: (item) => {
-        if (item.base.tree != null) { explorer.select(item.base.tree, true); } else { window.open(hfUrl(item.base.id), '_blank', 'noopener'); }
+        if (item.base.tree != null) { explorer.select(item.base.tree, true); } else { location.hash = modelHref(item.base.id); }
       },
     }),
     table: {
@@ -73,7 +73,9 @@ export async function render(section, params) {
 
   grid.append(card({
     title: 'Derivatives by family', sub: 'Derived models grouped by the family of the model (detected from names and base models)',
-    body: stackedBarList(index.families.slice(0, 15).map((f) => ({ label: f.family, parts: rels.map((r) => f[r]) })), series),
+    body: stackedBarList(index.families.slice(0, 15).map((f) => ({ label: f.family, parts: rels.map((r) => f[r]) })), series, {
+      onSelect: (item) => { location.hash = familyHref(item.label); },
+    }),
     table: { columns: [{ key: 'family', label: 'Family' }, ...rels.map((r) => ({ key: r, label: REL[r].label, num: true, fmt: int })), { key: 'total', label: 'Total', num: true, fmt: int }], rows: index.families },
   }));
 
@@ -85,6 +87,9 @@ export async function render(section, params) {
     <div class="filters" style="margin-bottom:12px">
       <div class="field"><label for="tree-pick">Base model</label>
         <select id="tree-pick">${withTree.map((b) => `<option value="${b.tree}">${esc(b.id)} (${int(b.direct)} direct)</option>`).join('')}</select></div>
+      <div class="field"><label for="tree-find">Or type a name</label>
+        <input id="tree-find" list="tree-bases" placeholder="e.g. Qwen3-8B" autocomplete="off">
+        <datalist id="tree-bases">${withTree.map((b) => `<option value="${esc(b.id)}"></option>`).join('')}</datalist></div>
     </div>
     <div id="tree-summary"></div>
     <div class="graph-wrap" id="tree-graph"></div>
@@ -93,12 +98,26 @@ export async function render(section, params) {
     <div class="tree tree-scroll" id="tree-list"></div>`;
   grid.append(ex);
   explorer = makeExplorer(ex);
-  const initial = +(params.get('tree') ?? withTree[0]?.tree ?? 0);
-  explorer.select(withTree.some((b) => b.tree === initial) ? initial : withTree[0].tree, false);
+  const initial = treeOf(params.get('tree'));
+  explorer.select(initial ?? withTree[0].tree, false);
+  if (params.get('tree') && initial == null) {
+    ex.querySelector('#tree-summary').insertAdjacentHTML('beforebegin', `<p class="note">No tree is drawn for ${esc(params.get('tree'))}: only the ${int(withTree.length)} bases with the most derivatives get one. <a href="${esc(modelHref(params.get('tree')))}">Open its model page →</a></p>`);
+  } else if (params.get('tree')) {
+    ex.scrollIntoView({ block: 'start' });
+  }
 }
 
 export function update(section, params) {
-  if (explorer && params.get('tree') != null) explorer.select(+params.get('tree'), false);
+  const idx = treeOf(params.get('tree'));
+  if (explorer && idx != null) explorer.select(idx, true);
+}
+
+/** A tree by base model id (permalinks) or by its number (older links). */
+function treeOf(v) {
+  if (v == null || v === '') return null;
+  const byId = index.bases.find((b) => b.tree != null && b.id.toLowerCase() === v.toLowerCase());
+  if (byId) return byId.tree;
+  return /^\d+$/.test(v) && index.bases.some((b) => b.tree === +v) ? +v : null;
 }
 
 function makeExplorer(root) {
@@ -108,18 +127,23 @@ function makeExplorer(root) {
   const summaryEl = root.querySelector('#tree-summary');
   let current = null;
   pick.addEventListener('change', () => select(+pick.value, false));
+  const find = root.querySelector('#tree-find');
+  find.addEventListener('change', () => {
+    const idx = treeOf(find.value.trim());
+    if (idx != null) { select(idx, false); find.value = ''; }
+  });
 
   async function select(idx, scroll) {
     if (idx === current) { if (scroll) root.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     current = idx;
     pick.value = String(idx);
-    history.replaceState(null, '', `#families?tree=${idx}`);
+    history.replaceState(null, '', `#families?tree=${encodeURIComponent(index.bases.find((x) => x.tree === idx)?.id ?? idx)}`);
     graphEl.innerHTML = '<p class="loading" style="padding:20px">Loading tree…</p>';
     const data = await load(`families/tree-${idx}.json`);
     if (current !== idx) return;
     const rels = data.relations;
     const b = data.base;
-    summaryEl.innerHTML = `<p><a href="${esc(hfUrl(b.id))}" rel="noopener"><strong>${esc(b.id)}</strong></a>
+    summaryEl.innerHTML = `<p><a href="${esc(modelHref(b.id))}"><strong>${esc(b.id)}</strong></a> <a class="hub-link" href="${esc(hfUrl(b.id))}" rel="noopener">Hub ↗</a>
       ${b.task ? `· ${esc(task(b.task))}` : ''} ${b.downloads != null ? `· ${compact(b.downloads)} downloads (30d)` : '· not tracked by the radar itself'}
       ${b.parents?.length ? `<br><span class="note">Itself built on ${b.parents.map((p) => esc(p)).join(', ')}</span>` : ''}<br>
       <span class="note">${int(b.direct)} direct derivatives, ${int(b.descendants)} in total across ${b.depth} generation${b.depth === 1 ? '' : 's'}; they were downloaded ${compact(b.descendant_downloads)} times in the last 30 days.</span></p>`;
@@ -150,7 +174,7 @@ function makeExplorer(root) {
 function nodeHtml(n, rels, isRoot) {
   const rel = isRoot ? '' : `<span class="rel rel-${rels[n.r]}">${REL[rels[n.r]].one}</span>`;
   const meta = [fmtParams(n.p) ? `${fmtParams(n.p)}` : null, `${compact(n.d)} dl`, n.n ? `${int(n.n)} derivative${n.n === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
-  return `${rel}<a href="${esc(hfUrl(n.i))}" rel="noopener">${esc(n.i)}</a><span class="meta">${meta}</span>`;
+  return `${rel}<a href="${esc(modelHref(n.i))}">${esc(n.i)}</a><span class="meta">${meta}</span>`;
 }
 
 function treeList(rootNode, rels) {

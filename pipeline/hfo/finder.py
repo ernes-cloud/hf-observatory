@@ -43,7 +43,7 @@ def build(con) -> dict:
                formats, parameters, ({MEMORY_SQL}) / 1e9 AS mem_gb, downloads_30d, likes,
                trending_score, gated, is_conversational, n_benchmarks,
                CAST(epoch(created_at) / 86400 AS INTEGER) AS created_day,
-               list_contains(tags, 'merge') OR list_contains(tags, 'mergekit') AS is_merge, noise
+               list_contains(tags, 'merge') OR list_contains(tags, 'mergekit') AS is_merge, noise, family
         FROM m WHERE NOT removed
         ORDER BY downloads_30d DESC, likes DESC""")
 
@@ -61,6 +61,7 @@ def build(con) -> dict:
     licenses, lic_idx = _encode([r["license"] for r in data], dictionary("license"))
     libs, lib_idx = _encode([r["library"] for r in data], dictionary("library"))
     bases, base_idx = _encode([r["base_model"] for r in data], dictionary("base_model"))
+    families, fam_col = _encode([r["family"] for r in data], dictionary("family"))
 
     lang_counts: dict[str, int] = {}
     for r in data:
@@ -80,7 +81,7 @@ def build(con) -> dict:
         "count": len(data),
         "dict": {
             "task": tasks, "license_family": fams, "license": licenses, "library": libs,
-            "base_model": bases, "language": langs, "format": FORMATS,
+            "base_model": bases, "language": langs, "format": FORMATS, "family": families,
         },
         "flags": {"gated": 1, "conversational": 2, "merge": 4, "noise": 8},
         "cols": {
@@ -100,5 +101,6 @@ def build(con) -> dict:
             "flags": [flags(r) for r in data],
             "bench": [r["n_benchmarks"] or 0 for r in data],
             "created": [r["created_day"] for r in data],
+            "fam": fam_col,
         },
     }

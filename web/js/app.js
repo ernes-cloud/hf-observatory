@@ -18,6 +18,7 @@ const VIEWS = {
   graveyard: './views/graveyard.js',
   newsletter: './views/newsletter.js',
   about: './views/about.js',
+  insights: './views/insights.js',
   model: './views/model.js',
   org: './views/org.js',
   family: './views/family.js',
@@ -27,14 +28,14 @@ const VIEWS = {
 const PREFETCH = {
   home: ['overview.json', 'trends.json', 'families/index.json', 'newsletter/index.json'],
   overview: ['overview.json'], finder: ['finder.json'], advisor: ['advisor.json'], trends: ['trends.json'],
-  families: ['families/index.json'], graveyard: ['graveyard.json'], newsletter: ['newsletter/index.json'],
+  families: ['families/index.json'], graveyard: ['graveyard.json'], insights: ['insights.json'], newsletter: ['newsletter/index.json'],
   model: ['models/index.json'], org: ['finder.json'], family: ['finder.json'], compare: ['models/index.json'],
 };
 let attempt = 0; // a failed dynamic import is remembered by the browser: retries use a fresh URL
 // Pages reached from links rather than the tab bar: the tab of the section they belong to stays lit.
 const PARENT_TAB = { model: 'finder', org: 'overview', family: 'overview', compare: 'finder' };
 const TITLES = {
-  home: 'Home', overview: 'Overview', finder: 'Model finder', advisor: 'Model advisor', trends: 'Trends', families: 'Family trees', graveyard: 'Graveyard', newsletter: 'Newsletter', about: 'Help & glossary',
+  home: 'Home', overview: 'Overview', finder: 'Model finder', advisor: 'Model advisor', trends: 'Trends', families: 'Family trees', graveyard: 'Graveyard', newsletter: 'Newsletter', about: 'Help & glossary', insights: 'Insights',
   model: 'Model', org: 'Publisher', family: 'Family', compare: 'Compare',
 };
 

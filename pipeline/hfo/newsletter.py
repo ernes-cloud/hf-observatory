@@ -13,6 +13,7 @@ from email.utils import format_datetime
 from xml.sax.saxutils import escape
 
 from .common import rows
+from .insights import LABS
 from .sources import MONDAY_MAJOR, version_day
 from .trends import FADING_FLOOR, closest_before, parse_ts
 
@@ -138,6 +139,32 @@ def issue(con, snaps: list[dict], old: int, new: int) -> dict:
     fam = rows(con, "SELECT coalesce(family, 'Other / undetected') AS family, count(*) AS models FROM fresh WHERE NOT noise GROUP BY 1 ORDER BY 2 DESC LIMIT 7")
     tasks = rows(con, "SELECT pipeline_tag AS task, count(*) AS models FROM fresh WHERE pipeline_tag IS NOT NULL AND NOT noise GROUP BY 1 ORDER BY 2 DESC LIMIT 5")
 
+    # Editorial sections. Major releases: new models from original labs. Derivatives: what the
+    # community built on top of models this week, one line per base. Copies: names of lab models
+    # re-uploaded under other accounts during the week.
+    labs_sql = ", ".join(f"'{x}'" for x in sorted(LABS))
+    releases = rows(con, f"""
+        SELECT {cols} FROM notable WHERE lower(author) IN ({labs_sql})
+        ORDER BY likes DESC, downloads_30d DESC LIMIT 8""")
+    for r in releases + top_new[:3]:
+        r["why"] = _why(con, r)
+    derived = rows(con, """
+        WITH d AS (SELECT n.id, n.downloads_30d, n.likes, lower(trim(split_part(x.base_model, ',', 1))) AS base,
+                          x.formats, lower(n.id) AS k
+                   FROM notable n JOIN m x USING (id) WHERE nullif(trim(x.base_model), '') IS NOT NULL)
+        SELECT any_value(b.id) AS base, count(*) AS models, sum(d.downloads_30d) AS downloads,
+               count(*) FILTER (WHERE list_contains(d.formats, 'gguf') OR d.k LIKE '%gguf%') AS gguf,
+               count(*) FILTER (WHERE list_contains(d.formats, 'mlx') OR d.k LIKE '%mlx%') AS mlx,
+               arg_max(d.id, d.downloads_30d) AS top
+        FROM d LEFT JOIN m b ON lower(b.id) = d.base
+        GROUP BY d.base HAVING count(*) >= 3 ORDER BY models DESC, downloads DESC LIMIT 8""")
+    copies = rows(con, f"""
+        SELECT f.id, f.downloads_30d AS downloads, o.id AS original
+        FROM fresh f JOIN m o ON lower(split_part(o.id, '/', 2)) = lower(split_part(f.id, '/', 2))
+             AND lower(o.author) IN ({labs_sql}) AND lower(f.author) NOT IN ({labs_sql}) AND NOT o.removed
+        WHERE length(split_part(f.id, '/', 2)) >= 6
+        ORDER BY f.downloads_30d DESC""")
+
     # Titles use the day encoded in the version (exports run early in the morning,
     # so the data's own timestamps can fall on the previous evening in UTC).
     da, db = (datetime.combine(version_day(s["major"]), datetime.min.time()) if s.get("major") else t
@@ -151,9 +178,25 @@ def issue(con, snaps: list[dict], old: int, new: int) -> dict:
         "stats": stats, "intro": intro,
         "top_new": top_new, "liked_new": liked_new, "removals": removals, "removers": removers,
         "rising": rising, "fading": fading, "publishers": publishers, "families": fam, "tasks": tasks,
+        "releases": releases, "derived": derived,
+        "copies": {"count": len(copies), "examples": copies[:6],
+                   "removed_rehosted": sum(1 for r in removals if r["kind"] == "rehosted")},
     }
     data["markdown"] = to_markdown(data)
     return data
+
+
+def _why(con, m: dict) -> str:
+    """One line on why a new model matters: what it is, its early traction and what it already spawned."""
+    kids = rows(con, """SELECT count(*) AS n FROM m WHERE NOT removed AND list_contains(
+                         list_transform(string_split(lower(coalesce(base_model, '')), ','), lambda x: trim(x)), lower(?))""",
+                [m["id"]])[0]["n"]
+    bits = [b for b in (params(m.get("parameters")), task(m["task"]) if m.get("task") else "") if b]
+    s = f"{' '.join(bits) or 'model'} from {m['author']}"
+    s += f"; {compact(m['downloads'])} downloads and {plural(m['likes'], 'like')} so far"
+    if kids:
+        s += f"; {plural(kids, 'derivative')} already built on it"
+    return s + "."
 
 
 def _intro(stats, top_new, removals, rising, publishers) -> list[str]:
@@ -203,6 +246,10 @@ def to_markdown(d: dict) -> str:
             f"- **{n(s['removed'])}** models removed ({n(s['removed_cleanup'])} were experiments nobody used, "
             f"{n(s['removed_replaced'])} were replaced by a newer upload)",
             f"- **{n(s['live_now'])}** live models tracked ({'+' if s['live_now'] >= s['live_before'] else '−'}{n(abs(s['live_now'] - s['live_before']))})", ""]
+    if d.get("releases"):
+        out += ["## Major releases", "", "New models from the original labs (Qwen, Google, Meta, Mistral, DeepSeek, NVIDIA…):", ""]
+        out += [f"- [{m['id']}]({hf(m['id'])}): {m['why']}" for m in d["releases"]]
+        out.append("")
     if d["top_new"]:
         out += ["## Top new models", ""]
         out += [f"{i}. " + _model_line(m, f"{compact(m['downloads'])} downloads, {plural(m['likes'], 'like')}, {LICENSE_LABEL.get(m['lf'], m['lf'])}") for i, m in enumerate(d["top_new"], 1)]
@@ -217,6 +264,20 @@ def to_markdown(d: dict) -> str:
         if d["fading"]:
             out += ["", "Biggest drops:", ""]
             out += [f"- [{m['id']}]({hf(m['id'])}): {compact(m['old'])} → {compact(m['new'])} (−{compact(abs(m['delta']))})" for m in d["fading"]]
+        out.append("")
+    if d.get("derived"):
+        out += ["## Built on top this week", "", "Base models with the most new derivatives (fine-tunes, quantizations, adapters, merges):", ""]
+        for m in d["derived"]:
+            fmts = ", ".join(f"{m[k]} {label}" for k, label in (("gguf", "GGUF"), ("mlx", "MLX")) if m[k])
+            out.append(f"- {m['base'] or '(not tracked)'}: {plural(m['models'], 'new model')}"
+                       + (f" ({fmts})" if fmts else "") + f"; most downloaded: {m['top']}")
+        out.append("")
+    if d.get("copies", {}).get("count"):
+        c = d["copies"]
+        out += ["## Copies of lab models", "",
+                f"{plural(c['count'], 'new repository', 'new repositories')} reuse the exact name of a model from an original lab under another account. "
+                "Some are legitimate mirrors or format conversions; others pass themselves off as the original. Check the publisher before downloading.", ""]
+        out += [f"- {x['id']} (copy of {x['original']}): {compact(x['downloads'])} downloads" for x in c["examples"]]
         out.append("")
     if d["removals"]:
         out += ["## Removals", ""]
@@ -272,7 +333,7 @@ def rss(order: list[dict]) -> str:
         if d["kind"] != "weekly":
             continue
         pub = parse_ts(d["to"]).replace(tzinfo=timezone.utc)
-        link = f"{SITE_URL}#newsletter?issue={d['slug']}"
+        link = f"{SITE_URL}p/newsletter/{d['slug']}/"  # the static page (readable without JavaScript)
         items.append(
             f"<item><title>{escape(d['title'])}</title><link>{escape(link)}</link>"
             f"<guid isPermaLink=\"false\">hf-observatory-{d['slug']}</guid>"

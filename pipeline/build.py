@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hfo import advisor, finder, graveyard, models, newsletter, overview, quality, trees, trends  # noqa: E402
+from hfo import advisor, finder, graveyard, insights, models, newsletter, overview, quality, seo, trees, trends  # noqa: E402
 from hfo.common import connect, write_json  # noqa: E402
 from hfo.sources import REPO, build_history, build_latest, check_latest, list_versions, log, version_day  # noqa: E402
 
@@ -64,12 +64,15 @@ def main(argv: list[str] | None = None) -> None:
     for sub in ("newsletter", "families", "models"):
         shutil.rmtree(out / sub, ignore_errors=True)
     sizes = {}
-    sizes["overview.json"] = write_json(out / "overview.json", overview.build(con, meta))
+    ov_data = overview.build(con, meta)
+    sizes["overview.json"] = write_json(out / "overview.json", ov_data)
     finder_head, finder_rest = finder.build(con)
     sizes["finder.json"] = write_json(out / "finder.json", finder_head)
     sizes["finder-rest.json"] = write_json(out / "finder-rest.json", finder_rest)
     sizes["advisor.json"] = write_json(out / "advisor.json", advisor.build(con, cache=args.cache))
-    sizes["graveyard.json"] = write_json(out / "graveyard.json", graveyard.build(con))
+    gy_data = graveyard.build(con)
+    sizes["graveyard.json"] = write_json(out / "graveyard.json", gy_data)
+    sizes["insights.json"] = write_json(out / "insights.json", insights.build(con, meta["tracking_start"]))
     tree_index, tree_files = trees.build(con)
     sizes["families/index.json"] = write_json(out / "families" / "index.json", tree_index)
     for idx, tree in tree_files.items():
@@ -89,6 +92,9 @@ def main(argv: list[str] | None = None) -> None:
         (out / "newsletter" / f"{slug}.md").write_text(issue["markdown"], encoding="utf-8")
     (out / "newsletter" / "feed.xml").write_text(feed, encoding="utf-8")
     log(f"wrote {len(issues)} newsletter issues")
+    n_pages = seo.build(out.parent, {"shards": shards, "overview": ov_data, "trends": trend_data, "graveyard": gy_data,
+                                     "families": tree_index, "issues": issues})
+    log(f"wrote {n_pages} static pages for search engines, sitemap.xml and robots.txt")
     sizes["meta.json"] = write_json(out / "meta.json", meta)
 
     for name, n in sizes.items():

@@ -407,3 +407,19 @@ def test_model_shards_and_search(built):
     search = json.loads((built / "search.json").read_text())
     assert search["models"][0] == "Qwen/Qwen3-8B"
     assert ["Qwen", 1] in search["authors"] or any(a[0] == "Qwen" for a in search["authors"])
+
+
+def test_static_pages_and_insights(built):
+    site = built.parent
+    page = (site / "p" / "models" / "Qwen" / "Qwen3-8B" / "index.html").read_text()
+    assert "<title>Qwen/Qwen3-8B · HF Observatory</title>" in page
+    assert 'rel="canonical"' in page and "#model?id=Qwen/Qwen3-8B" in page
+    assert "quant/Qwen3-8B-GGUF" in page  # its derivatives are listed
+    for section in ("finder", "overview", "trends", "graveyard", "advisor", "families", "newsletter"):
+        assert (site / "p" / section / "index.html").exists(), section
+    sitemap = (site / "sitemap.xml").read_text()
+    assert "p/models/Qwen/Qwen3-8B/" in sitemap and "<urlset" in sitemap
+    assert "Sitemap:" in (site / "robots.txt").read_text()
+    ins = json.loads((built / "insights.json").read_text())
+    assert ins["quantizations"] == 1 and ins["quantizers"][0]["author"] == "quant"
+    assert ins["quantizers"][0]["formats"] == {"GGUF": 1}

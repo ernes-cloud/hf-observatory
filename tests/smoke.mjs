@@ -21,7 +21,7 @@ const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1
 const shotsDir = opt('--screenshots');
 let base = opt('--base');
 
-const VIEWS = (opt('--views') || 'home,advisor,overview,finder,trends,families,graveyard,newsletter,about').split(',');
+const VIEWS = (opt('--views') || 'home,advisor,overview,finder,trends,families,insights,graveyard,newsletter,about').split(',');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.xml': 'application/xml', '.md': 'text/markdown' };
 
 let server;
@@ -170,6 +170,36 @@ await checkViewport('mobile', { width: 375, height: 760 }, 'light');
   if (fallback !== '#home') failures.push(`unknown route kept "${fallback}"`);
   for (const e of errs) failures.push(`connected pages: ${e}`);
   console.log(`  connected pages: ${first.trim()} → model page, compare tray, ${orgModels} models of ${org}, family, ${suggestions} search suggestions`);
+  await ctx.close();
+}
+
+// Other views respond: graveyard filter, newsletter issue switch, family tree picked by name.
+{
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  await page.goto(`${base}#graveyard`, { waitUntil: 'networkidle' });
+  await page.waitForFunction(() => /removed model/.test(document.querySelector('#g-count')?.textContent || ''));
+  const all = await page.textContent('#g-count');
+  await page.selectOption('#g-kind', 'replaced');
+  const replaced = await page.textContent('#g-count');
+  if (all === replaced) failures.push('graveyard: "What happened" filter did not change the list');
+  await page.goto(`${base}#newsletter`, { waitUntil: 'networkidle' });
+  const pick = await page.waitForSelector('#view-newsletter select');
+  const options = await pick.evaluate((s) => [...s.options].map((o) => o.value));
+  const t1 = await page.textContent('#view-newsletter h2');
+  if (options.length > 1) {
+    await page.selectOption('#view-newsletter select', options[1]);
+    await page.waitForFunction((t) => document.querySelector('#view-newsletter h2')?.textContent !== t, t1, { timeout: 10000 })
+      .catch(() => failures.push('newsletter: switching issues did not change the issue'));
+  }
+  await page.goto(`${base}#families`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#tree-find');
+  const bases = await page.$$eval('#tree-bases option', (o) => o.map((x) => x.value));
+  await page.fill('#tree-find', bases[1]);
+  await page.dispatchEvent('#tree-find', 'change');
+  await page.waitForFunction((id) => decodeURIComponent(location.hash).includes(id), bases[1], { timeout: 10000 })
+    .catch(() => failures.push('families: typing a base name did not open its tree'));
+  console.log(`  other views: graveyard "${all}" → "${replaced}", ${options.length} newsletter issues, tree ${bases[1]}`);
   await ctx.close();
 }
 

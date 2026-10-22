@@ -109,6 +109,10 @@ def build(con, snaps: list[dict]) -> tuple[dict, dict[int, dict], dict]:
             rec["kids"] = {r: n for r, n in by_rel.items() if n}
             top = sorted(kids, key=lambda kr: -((info.get(kr[0].lower()) or {}).get("dl") or 0))[:TOP_CHILDREN]
             rec["top"] = [[cid, rel, (info.get(cid.lower()) or {}).get("dl") or 0] for cid, rel in top]
+        # Papers: arxiv:<id> tags, minus the model-card template's own citation (arXiv 1910.09700).
+        papers = [t.split(":", 1)[1] for t in m["tags"] or [] if t.startswith("arxiv:") and t != "arxiv:1910.09700"]
+        if papers:
+            rec["ax"] = papers[:5]
         if m["benchmarks_json"]:
             try:
                 bench = json.loads(m["benchmarks_json"])

@@ -749,3 +749,5 @@ h1[tabindex="-1"]:focus { outline: none; }
   .phone-only { display: block; }
   #tree-graph, #tree-explorer > .legend { display: none; }
 }
+.static-page { padding: 24px 0 48px; } .static-page .prose { max-width: 80ch; }
+.warn-text { color: var(--ink); font-weight: 600; font-size: .8rem; border-left: 3px solid var(--series-2); padding-left: 6px; }

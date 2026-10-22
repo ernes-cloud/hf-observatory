@@ -158,6 +158,7 @@ function detailsCard(m) {
     ['Parameters', m.p ? int(m.p) : '–'],
     ['Repository size', m.sb ? gigabytes(m.sb / 1e9) : '–'],
     ['Family', m.fam ? `<a href="${esc(familyHref(m.fam))}">${esc(m.fam)}</a>` : '–'],
+    ...(m.ax?.length ? [['Papers', m.ax.map((x) => `<a href="https://huggingface.co/papers/${encodeURIComponent(x)}" rel="noopener">${esc(x)}</a> <a class="note" href="https://arxiv.org/abs/${encodeURIComponent(x)}" rel="noopener">arXiv</a>`).join('<br>')]] : []),
   ];
   return card({ title: 'Details', body: `<dl class="facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` });
 }

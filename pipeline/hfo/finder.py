@@ -37,7 +37,22 @@ def _encode(values: list, top: list) -> tuple[list[str], list[int]]:
     return top, [index.get(v, -1) for v in values]
 
 
-def build(con) -> dict:
+# The first file holds the models people use (rows are sorted by downloads, so it is a prefix
+# of the full list); the long tail loads in the background or when a search needs it.
+TIER_MIN_DOWNLOADS = 100
+
+
+def build(con) -> tuple[dict, dict]:
+    """Returns (finder.json, finder-rest.json)."""
+    full = _build(con)
+    cols = full["cols"]
+    k = next((i for i, d in enumerate(cols["dl"]) if (d or 0) < TIER_MIN_DOWNLOADS), len(cols["dl"]))
+    head = {**full, "count": k, "total": full["count"], "cols": {c: v[:k] for c, v in cols.items()}}
+    rest = {"count": full["count"] - k, "cols": {c: v[k:] for c, v in cols.items()}}
+    return head, rest
+
+
+def _build(con) -> dict:
     data = rows(con, f"""
         SELECT id, pipeline_tag, license_family, license, library, nullif(trim(base_model), '') AS base_model, languages,
                formats, parameters, ({MEMORY_SQL}) / 1e9 AS mem_gb, downloads_30d, likes,

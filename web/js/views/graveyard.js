@@ -122,7 +122,7 @@ export async function render(section) {
       <div class="field checks" style="align-self:end"><label><input type="checkbox" id="g-gated"> Gated only</label><label><input type="checkbox" id="g-unclear"> License not declared</label></div>
     </div>
     <p class="result-count" id="g-count" role="status" aria-live="polite"></p>
-    <div class="table-wrap" id="g-table"></div>
+    <div class="table-wrap stack-table" id="g-table"></div>
     <div class="more-row"><button type="button" class="btn" id="g-more">Show more</button></div>`;
   grid.append(list);
 

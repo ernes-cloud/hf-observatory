@@ -65,7 +65,9 @@ def main(argv: list[str] | None = None) -> None:
         shutil.rmtree(out / sub, ignore_errors=True)
     sizes = {}
     sizes["overview.json"] = write_json(out / "overview.json", overview.build(con, meta))
-    sizes["finder.json"] = write_json(out / "finder.json", finder.build(con))
+    finder_head, finder_rest = finder.build(con)
+    sizes["finder.json"] = write_json(out / "finder.json", finder_head)
+    sizes["finder-rest.json"] = write_json(out / "finder-rest.json", finder_rest)
     sizes["advisor.json"] = write_json(out / "advisor.json", advisor.build(con, cache=args.cache))
     sizes["graveyard.json"] = write_json(out / "graveyard.json", graveyard.build(con))
     tree_index, tree_files = trees.build(con)

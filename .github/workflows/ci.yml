@@ -43,7 +43,7 @@ jobs:
           node-version: 22
 
       - name: Install test tools
-        run: npm install --no-save --no-package-lock playwright@1.56.1 yaml@2.8.1
+        run: npm install --no-save --no-package-lock playwright@1.56.1 yaml@2.8.1 axe-core@4.10.2
 
       - name: Advisor engine unit + fuzz tests (on the freshly built data)
         run: node --test tests/advisor-engine.test.mjs tests/advisor-calibration.test.mjs tests/advisor-fuzz.test.mjs

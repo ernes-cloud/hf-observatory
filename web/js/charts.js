@@ -61,7 +61,7 @@ export function tableHtml(columns, rows, caption = '') {
   const body = rows.map((r) => `<tr>${columns.map((c) => {
     const v = r[c.key];
     const txt = c.html ? c.html(v, r) : esc(c.fmt ? c.fmt(v, r) : v ?? '–');
-    return `<td${c.num ? ' class="num"' : ''}>${txt}</td>`;
+    return `<td data-label="${esc(c.label)}"${c.num ? ' class="num"' : ''}>${txt}</td>`;
   }).join('')}</tr>`).join('');
   return `<table>${caption ? `<caption class="visually-hidden">${esc(caption)}</caption>` : ''}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }

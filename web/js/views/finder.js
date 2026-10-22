@@ -163,7 +163,7 @@ function cardHtml(i) {
   if (c.flags[i] & 1) chips.push('<span class="chip gated">Gated</span>');
   const created = c.created[i] != null ? date(c.created[i] * DAY_MS) : null;
   return `<article class="model-card">
-    <h3><a href="${esc(modelHref(id))}"><span class="author">${esc(author)}/</span>${esc(rest.join('/'))}</a></h3>
+    <h2><a href="${esc(modelHref(id))}"><span class="author">${esc(author)}/</span>${esc(rest.join('/'))}</a></h2>
     <div class="chips">${chips.join('')}</div>
     <p class="summary">${esc(summary(i))}</p>
     <div class="model-stats">
@@ -191,10 +191,14 @@ function markPresets() {
 
 function refresh(resetPage = true) {
   markPresets();
+  const active = ['task', 'lang', 'lic', 'mem'].filter((k) => state[k]).length + state.fmt.length
+    + [state.hideGated, state.chat, state.showNoise].filter(Boolean).length;
+  if (els.toggle) els.toggle.textContent = active ? `Filters (${active} active)` : 'Filters';
   results = filter();
   if (resetPage) shown = PAGE;
   els.count.textContent = `${int(results.length)} model${results.length === 1 ? '' : 's'} match`
-    + (hiddenNoise ? ` (${int(hiddenNoise)} low-signal uploads hidden)` : '');
+    + (hiddenNoise ? ` (${int(hiddenNoise)} low-signal uploads hidden)` : '')
+    + (D.complete ? '' : ` · loading ${int(D.total - D.n)} models with under 100 downloads…`);
   if (!results.length) {
     els.results.innerHTML = '<div class="empty">No models match these filters. Try removing one.</div>';
     els.more.hidden = true;
@@ -240,6 +244,9 @@ function readForm() {
 }
 
 export async function render(section, params) {
+  // The header first: the index is the largest download on the site.
+  section.innerHTML = `<header class="page-head"><p class="eyebrow">Model finder</p><h1 id="h-finder">Which model fits my needs?</h1>
+    <p class="lead">Loading the model index…</p></header><p class="loading" role="status">Loading models…</p>`;
   D = await loadFinder();
   const taskOpts = D.dict.task.map((t, i) => ({ t, n: D.taskCounts[i] })).sort((a, b) => b.n - a.n)
     .map(({ t, n }) => `<option value="${esc(t)}">${esc(task(t))} (${int(n)})</option>`).join('');
@@ -249,7 +256,7 @@ export async function render(section, params) {
 
   section.replaceChildren(pageHeader({
     id: 'h-finder', eyebrow: 'Model finder', title: 'Which model fits my needs?',
-    lead: `Search ${int(D.n)} live models. Pick a starting point below or set the filters yourself; every result opens its page here, with its history, family and alternatives.`,
+    lead: `Search ${int(D.total)} live models. Pick a starting point below or set the filters yourself; every result opens its page here, with its history, family and alternatives.`,
     howTo: [
       `<strong>Task</strong> is what the model does (chat, transcribe audio, generate images…).`,
       `<strong>Max size</strong> uses the ${term('memory', 'estimated memory')} needed to load the model. Choose the memory of your GPU or Mac.`,
@@ -264,8 +271,9 @@ export async function render(section, params) {
     <div class="presets" role="group" aria-labelledby="presets-label">${PRESETS.map((p, i) => `<button type="button" class="preset" data-i="${i}" aria-pressed="false">${esc(p.label)}</button>`).join('')}</div>`;
   section.append(presetsEl);
   section.insertAdjacentHTML('beforeend', `
-    <form class="card filters" id="finder-form" role="search" onsubmit="return false">
-      <div class="field wide"><label for="f-q">Search by name, organization or base model</label>
+    <form class="card filters collapsed" id="finder-form" role="search">
+      <button type="button" class="btn filters-toggle always" id="f-toggle" aria-expanded="false" aria-controls="finder-form">Filters</button>
+      <div class="field wide always"><label for="f-q">Search by name, organization or base model</label>
         <input type="search" id="f-q" name="q" placeholder="e.g. qwen coder, whisper, unsloth" autocomplete="off"></div>
       <div class="field"><label for="f-task">Task</label>
         <select id="f-task" name="task"><option value="">Any task</option>${taskOpts}</select></div>
@@ -282,7 +290,7 @@ export async function render(section, params) {
         </select></div>
       <div class="field"><label for="f-mem">Max size (estimated memory)</label>
         <select id="f-mem" name="mem">${MEMORY_PRESETS.map((m) => `<option value="${m.v}">${m.label}</option>`).join('')}</select></div>
-      <div class="field"><label for="f-sort">Sort by</label>
+      <div class="field always"><label for="f-sort">Sort by</label>
         <select id="f-sort" name="sort">${SORTS.map((s) => `<option value="${s.v}">${s.label}</option>`).join('')}</select></div>
       <fieldset class="field wide" style="border:0;padding:0;margin:0">
         <legend class="label" style="font-size:.8rem;color:var(--ink-2);font-weight:600;margin-bottom:4px">Format (any of)</legend>
@@ -308,6 +316,13 @@ export async function render(section, params) {
     moreBtn: section.querySelector('#f-more-btn'),
   };
   bindCompareButtons(els.results);
+  // Phones: filters fold under one button so results start near the top.
+  const toggle = section.querySelector('#f-toggle');
+  toggle.addEventListener('click', () => {
+    const open = els.form.classList.toggle('collapsed') === false;
+    toggle.setAttribute('aria-expanded', String(open));
+  });
+  els.toggle = toggle;
   state = readState(params);
   syncForm();
   refresh();
@@ -325,9 +340,18 @@ export async function render(section, params) {
     clearTimeout(timer);
     timer = setTimeout(() => { readForm(); writeHash(); refresh(); }, e.target.name === 'q' ? 180 : 0);
   };
+  els.form.addEventListener('submit', (e) => e.preventDefault());
   els.form.addEventListener('input', onChange);
   els.form.addEventListener('change', onChange);
   els.form.addEventListener('reset', () => setTimeout(() => { readForm(); writeHash(); refresh(); }));
+  if (!D.complete) {
+    loadFinder({ full: true }).then(() => {
+      refresh(false);
+      // option counts now cover the whole index
+      els.form.task.querySelectorAll('option[value]:not([value=""])').forEach((o) => { o.textContent = `${task(o.value)} (${int(D.taskCounts[D.dict.task.indexOf(o.value)])})`; });
+      els.form.lang.querySelectorAll('option[value]:not([value=""])').forEach((o) => { o.textContent = `${language(o.value)} (${int(D.langCounts[D.dict.language.indexOf(o.value)])})`; });
+    }).catch(() => { els.count.textContent += ' (the rest could not be loaded)'; });
+  }
   els.moreBtn.addEventListener('click', () => {
     const first = shown;
     shown += PAGE;

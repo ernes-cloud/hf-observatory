@@ -129,15 +129,34 @@ npm run screenshots                       # refresh docs/screenshots/
 ## Data notes
 
 * `downloads_30d` is a rolling 30-day window published by the Hub.
-* License classes come from the dataset: **open** (commercial use allowed), **non-commercial**, or
-  **unclear** (missing, “other”, or ambiguous). Always check the model card before using a model commercially.
+* **Coverage.** The dataset is a curated selection of what trends on the Hub, not a mirror of it, and tracking
+  began on 2026-08-19. Overview and Trends say so in a banner; the "new models per week" chart starts that week.
+* **Data cleaning** (`pipeline/hfo/quality.py`, applied before any page is built; the About page explains it):
+  * licenses are reclassified into **open source**, **open with conditions** (Llama, Gemma, OpenRAIL, NVIDIA
+    Open Model…), **non-commercial** (including research-only and Qwen Research) and **not declared**; the
+    dataset counts Llama, Gemma and Qwen Research as "oss";
+  * **low-signal uploads** (seed / step / checkpoint sweeps, course exercises, test repos, no downloads or likes
+    after a week) are flagged: hidden by default in the finder and left out of rankings, breakdowns, Trends lists
+    and the newsletter;
+  * a 30-day download figure copied across one publisher's sibling repos is counted once in totals;
+  * a size written in the name wins when the Hub count is far below it (packed 4-bit / NVFP4 weights), except
+    for drafts, adapters and MTP heads;
+  * removals are labelled **replaced** (near-identical name from the same publisher), **same name elsewhere**
+    (live under another account) or **unused experiment** (never had traction);
+  * families are matched on the repo name and base model only, with exclusions for Ollama, llama.cpp, HuBERT
+    and MolmoAct, and new families (T5, GPT-2, CLIP / SigLIP, ViT, wav2vec2, Chronos, Kokoro, Z-Image, Krea…);
+  * free-text task tags are dropped; stale trending scores (frozen for 6+ snapshots) are left out; "Fading"
+    ranks relative drops among models with 20K+ downloads; "New on the Hub" only lists models created in the window.
+* **Build gates**: the build stops when columns the site needs are missing or retyped, or when the export has
+  fewer than 80% of the models of the last good build, so the site keeps its previous data. When the release
+  list can't be fetched, cached snapshots are used. New snapshots also keep `license`, `base_model`, `formats`
+  and `library` for later analyses.
 * Memory estimates in the finder are rough: parameters × bytes per parameter (2 for 16-bit, ~1.1 for 8-bit,
   ~0.6 for 4-bit and GGUF, assuming the common Q4 quantization) + 15%. Models without a parameter count have no
   estimate and are excluded by size filters unless you include them explicitly.
 * The dataset’s model cards and schema are written in Spanish. The site does not reproduce the cards; the
   short English descriptions are generated from structured metadata, and the schema is translated on the
   site’s *About the data* page.
-* The radar started in August 2026, so anything earlier is reconstructed from creation dates.
 * Family trees use the Hub tags `base_model:<relation>:<parent>`; models that only declare `base_model` count as
   “other derivatives”. Parents are matched case-insensitively and only live models are counted as derivatives.
   Very large families are trimmed in the tree (top 120 children of the base, top 25 below that, 4 generations).

@@ -66,9 +66,20 @@ export function language(code) {
 }
 
 export const LICENSE_FAMILY = {
-  oss: { label: 'Open license', long: 'Open license (commercial use allowed)', short: 'Commercial OK' },
-  'non-commercial': { label: 'Non-commercial', long: 'Non-commercial license', short: 'Non-commercial' },
-  unknown: { label: 'Unclear / not declared', long: 'License unclear or not declared', short: 'License unclear' },
+  oss: { label: 'Open source', long: 'Open-source license (commercial use allowed)', short: 'Commercial OK' },
+  conditional: { label: 'Open with conditions', long: 'Custom license (Llama, Gemma, OpenRAIL…): commercial use usually allowed, with conditions', short: 'Conditions apply' },
+  'non-commercial': { label: 'Non-commercial', long: 'Non-commercial or research-only license', short: 'Non-commercial' },
+  unknown: { label: 'Not declared', long: 'License missing, “other” or ambiguous', short: 'License unclear' },
+};
+export const LF_COLOR = { oss: 'var(--series-1)', conditional: 'var(--series-3)', 'non-commercial': 'var(--series-2)', unknown: 'var(--axis)' };
+export const LF_ORDER = ['oss', 'conditional', 'non-commercial', 'unknown'];
+
+/** Why a model left the Hub, as far as the data can tell (pipeline/hfo/quality.py). */
+export const REMOVAL_KIND = {
+  removed: { label: 'Removed', long: 'Deleted or made private, with no replacement in sight' },
+  replaced: { label: 'Replaced', long: 'The same publisher uploaded a near-identical name around the same time (a new version)' },
+  rehosted: { label: 'Same name elsewhere', long: 'A repository with the same name is live under another account (a mirror, a re-upload or the original)' },
+  cleanup: { label: 'Unused experiment', long: 'Never had downloads or likes: clean-up of tests and experiments' },
 };
 
 export const FORMAT_LABEL = { gguf: 'GGUF', mlx: 'MLX', onnx: 'ONNX', safetensors: 'safetensors', diffusers: 'Diffusers' };

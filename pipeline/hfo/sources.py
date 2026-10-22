@@ -39,11 +39,21 @@ LATEST_COLUMNS = """
     len(benchmarks) AS n_benchmarks, to_json(benchmarks) AS benchmarks_json
 """
 
-# Columns kept for historical snapshots (trends + newsletter).
+# Columns kept for historical snapshots (trends + newsletter). license, base_model, formats
+# and library were added in October 2026: older cached snapshots lack them, so readers
+# must only select them where present (see ``snapshot_has``).
 SNAPSHOT_COLUMNS = """
     id, author, created_at, updated_at, pipeline_tag, license_family, likes, downloads_30d,
-    trending_score, parameters, gated, removed, removed_at
+    trending_score, parameters, gated, removed, removed_at, license, base_model, formats, library
 """
+
+# What the site needs from the bulk export, with the DuckDB type family it must have.
+REQUIRED = {
+    "id": "VARCHAR", "author": "VARCHAR", "created_at": "TIMESTAMP", "license": "VARCHAR",
+    "pipeline_tag": "VARCHAR", "tags": "[]", "likes": "INT", "downloads_30d": "INT",
+    "parameters": "INT", "formats": "[]", "gated": "BOOLEAN", "removed": "BOOLEAN", "removed_at": "TIMESTAMP",
+}
+MIN_SHARE = 0.8  # a build with fewer models than 80% of the last good one is refused
 
 
 def log(msg: str) -> None:
@@ -222,9 +232,37 @@ def build_snapshot(version: Version, cache: Path) -> dict | None:
     return meta
 
 
+def check_latest(con: duckdb.DuckDBPyConnection, meta: dict, cache: Path) -> None:
+    """Refuse to publish a broken export: missing or retyped columns, or far fewer models
+    than the last build that passed (kept in ``cache/snapshots/last_good.json``)."""
+    types = {name: typ for name, typ, *_ in con.execute("DESCRIBE m").fetchall()}
+    bad = [f"{c} ({types.get(c, 'missing')})" for c, want in REQUIRED.items() if want not in types.get(c, "")]
+    if bad:
+        raise RuntimeError(f"upstream schema changed: {', '.join(bad)}")
+    path = cache / "snapshots" / "last_good.json"  # the snapshots folder is what CI keeps between runs
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        last = json.loads(path.read_text())
+    except (OSError, ValueError):
+        last = None
+    if last and meta["models"] < MIN_SHARE * last["models"]:
+        raise RuntimeError(f"only {meta['models']:,} models in the export (last good build had {last['models']:,}); "
+                           "refusing to publish a partial dataset")
+    path.write_text(json.dumps({"models": meta["models"], "snapshot_at": meta["snapshot_at"]}))
+
+
+def cached_versions(cache: Path) -> list[Version]:
+    """Releases whose snapshot is already cached: the fallback when the tag list can't be fetched."""
+    return sorted(v for v in (Version.parse(p.stem) for p in (cache / "snapshots").glob("v*.json")) if v)
+
+
 def build_history(cache: Path, daily_days: int, max_snapshots: int) -> list[dict]:
     """Snapshots used for trends and the newsletter, oldest first."""
-    versions = list_versions()
+    try:
+        versions = list_versions()
+    except (subprocess.CalledProcessError, OSError) as e:
+        versions = cached_versions(cache)
+        log(f"could not list releases ({e}); using the {len(versions)} cached snapshots")
     log(f"{len(versions)} numbered releases found")
     metas = []
     for v in pick_history(versions, daily_days, max_snapshots):

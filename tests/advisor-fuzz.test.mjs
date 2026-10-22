@@ -88,7 +88,7 @@ function checkResult(res, s, label, r) {
   for (const [i, x] of res.list.slice(0, 12).entries()) {
     const { m, fit, kind } = x;
     const where = `${label} #${i + 1} ${m.id} (${kind} ${fit.quant})`;
-    if (s.commercial) assert.equal(m.lf, 'oss', where);
+    if (s.commercial) assert.ok(['oss', 'conditional'].includes(m.lf), where);
     if (s.hideGated) assert.ok(!m.gated, where);
     if (sized) assert.ok(m.p >= lo * 0.9 && m.p <= hi * 1.1, `${where}: size ${m.p} outside ${lo}–${hi}`);
     if (s.archFilter === 'moe') assert.ok(m.moe || m.a, `${where}: not MoE`);

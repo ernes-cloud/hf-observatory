@@ -14,7 +14,11 @@ LIFESPAN_BUCKETS = [
     ("2+ years", None),
 ]
 
-MODEL_COLUMNS = ["id", "task", "lf", "license", "gated", "created", "removed_at", "lifespan", "downloads", "likes", "params"]
+MODEL_COLUMNS = ["id", "task", "lf", "license", "gated", "created", "removed_at", "lifespan", "downloads", "likes", "params",
+                 "kind", "successor"]
+
+# Why a model is gone, as far as the data can tell (quality.py sets ``removal_kind``).
+KINDS = ["removed", "replaced", "rehosted", "cleanup"]
 
 
 def _lifespan_case(col: str) -> str:
@@ -38,12 +42,17 @@ def build(con) -> dict:
                avg((license_family = 'unknown')::INT) FILTER (WHERE removed) AS unclear_share_removed,
                avg((license_family = 'unknown')::INT) FILTER (WHERE NOT removed) AS unclear_share_live,
                count(*) FILTER (WHERE removed AND downloads_30d >= 1000) AS removed_with_traction,
+               count(*) FILTER (WHERE removal_kind = 'removed') AS kind_removed,
+               count(*) FILTER (WHERE removal_kind = 'replaced') AS kind_replaced,
+               count(*) FILTER (WHERE removal_kind = 'rehosted') AS kind_rehosted,
+               count(*) FILTER (WHERE removal_kind = 'cleanup') AS kind_cleanup,
                strftime(min(removed_at), '%Y-%m-%d') AS first_detected,
                strftime(max(removed_at), '%Y-%m-%d') AS last_detected
         FROM m""")[0]
 
     by_author = rows(con, """
         SELECT author, count(*) FILTER (WHERE removed) AS removed, count(*) AS tracked,
+               count(*) FILTER (WHERE removal_kind = 'cleanup') AS cleanup,
                sum(downloads_30d) FILTER (WHERE removed) AS downloads
         FROM m GROUP BY author HAVING count(*) FILTER (WHERE removed) > 0
         ORDER BY removed DESC, downloads DESC LIMIT 20""")
@@ -78,7 +87,7 @@ def build(con) -> dict:
         SELECT id, pipeline_tag AS task, license_family AS lf, license, gated,
                strftime(created_at, '%Y-%m-%d') AS created, strftime(removed_at, '%Y-%m-%d') AS removed_at,
                round(lifespan, 1) AS lifespan, downloads_30d AS downloads, likes,
-               round(parameters / 1e6, 1) AS params
+               round(parameters / 1e6, 1) AS params, removal_kind AS kind, successor
         FROM dead ORDER BY downloads_30d DESC, likes DESC, removed_at DESC""")
 
     return {
@@ -89,7 +98,8 @@ def build(con) -> dict:
         "license": license_cmp,
         "by_task": by_task,
         "by_family": by_family,
-        "notable": models[:15],
+        "kinds": KINDS,
+        "notable": [m for m in models if m["kind"] in ("removed", "rehosted")][:15],
         "models": {
             "columns": MODEL_COLUMNS,
             "rows": [[m[c] for c in MODEL_COLUMNS] for m in models],

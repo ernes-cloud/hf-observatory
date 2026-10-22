@@ -32,7 +32,9 @@ const PRESETS = [
   { label: 'Embeddings for search', state: { task: 'feature-extraction' } },
   { label: 'Trending now', state: { sort: 'trending' } },
 ];
-const EMPTY = { q: '', task: '', lang: '', lic: '', mem: '', unknownSize: false, fmt: [], hideGated: false, chat: false, sort: 'downloads' };
+const EMPTY = { q: '', task: '', lang: '', lic: '', mem: '', unknownSize: false, fmt: [], hideGated: false, chat: false, showNoise: false, sort: 'downloads' };
+let hiddenNoise = 0;
+const NOISE = 8; // flag set by the pipeline: experiment sweeps, course exercises, test repos, no traction after a week
 
 let D = null; // decoded index
 let state = null;
@@ -67,6 +69,7 @@ function readState(p) {
     fmt: (p.get('fmt') || '').split(',').filter((f) => D.dict.format.includes(f)),
     hideGated: p.get('gated') === 'hide',
     chat: p.get('chat') === '1',
+    showNoise: p.get('all') === '1',
     sort: SORTS.some((s) => s.v === p.get('sort')) ? p.get('sort') : 'downloads',
   };
 }
@@ -82,6 +85,7 @@ function writeHash() {
   if (state.fmt.length) p.set('fmt', state.fmt.join(','));
   if (state.hideGated) p.set('gated', 'hide');
   if (state.chat) p.set('chat', '1');
+  if (state.showNoise) p.set('all', '1');
   if (state.sort !== 'downloads') p.set('sort', state.sort);
   const qs = p.toString();
   history.replaceState(null, '', `#finder${qs ? `?${qs}` : ''}`);
@@ -92,10 +96,12 @@ function filter() {
   const terms = state.q.toLowerCase().split(/\s+/).filter(Boolean);
   const taskIdx = state.task ? D.dict.task.indexOf(state.task) : -1;
   const langIdx = state.lang ? D.dict.language.indexOf(state.lang) : -1;
-  const lfIdx = { commercial: [0], noncommercial: [1], unclear: [2], known: [0, 1] }[state.lic];
+  // license_family dictionary order: oss, non-commercial, unknown, conditional
+  const lfIdx = { commercial: [0], 'commercial-terms': [0, 3], noncommercial: [1], unclear: [2], known: [0, 1, 3] }[state.lic];
   const mem = state.mem ? +state.mem : null;
   const fmtMask = state.fmt.reduce((m, f) => m | (1 << D.dict.format.indexOf(f)), 0);
   const out = [];
+  hiddenNoise = 0;
   for (let i = 0; i < D.n; i++) {
     if (state.task && c.task[i] !== taskIdx) continue;
     if (lfIdx && !lfIdx.includes(c.lf[i])) continue;
@@ -112,6 +118,7 @@ function filter() {
       const base = D.baseLower[i];
       if (!terms.every((t) => hay.includes(t) || base.includes(t))) continue;
     }
+    if (!state.showNoise && c.flags[i] & NOISE) { hiddenNoise++; continue; }
     out.push(i);
   }
   const key = {
@@ -150,6 +157,7 @@ function summary(i) {
   if (fmts.length) s += ` Ships as ${fmts.join(', ')}.`;
   if (lf === 'oss') s += ` License: ${lic || 'open'} (commercial use allowed).`;
   else if (lf === 'non-commercial') s += ` License: ${lic || 'non-commercial'} (no commercial use).`;
+  else if (lf === 'conditional') s += ` License: ${lic} (custom terms: commercial use is usually allowed with conditions, read them first).`;
   else s += lic && lic !== 'other' && lic !== 'unknown' ? ` License: ${lic} (check its terms before commercial use).` : ' License not clearly declared.';
   return s;
 }
@@ -196,7 +204,8 @@ function refresh(resetPage = true) {
   markPresets();
   results = filter();
   if (resetPage) shown = PAGE;
-  els.count.textContent = `${int(results.length)} model${results.length === 1 ? '' : 's'} match`;
+  els.count.textContent = `${int(results.length)} model${results.length === 1 ? '' : 's'} match`
+    + (hiddenNoise ? ` (${int(hiddenNoise)} low-signal uploads hidden)` : '');
   if (!results.length) {
     els.results.innerHTML = '<div class="empty">No models match these filters. Try removing one.</div>';
     els.more.hidden = true;
@@ -219,6 +228,7 @@ function syncForm() {
   f.querySelectorAll('input[name="fmt"]').forEach((x) => { x.checked = state.fmt.includes(x.value); });
   f.gated.checked = state.hideGated;
   f.chat.checked = state.chat;
+  f.all.checked = state.showNoise;
   f.sort.value = state.sort;
 }
 
@@ -234,6 +244,7 @@ function readForm() {
     fmt: [...f.querySelectorAll('input[name="fmt"]:checked')].map((x) => x.value),
     hideGated: f.gated.checked,
     chat: f.chat.checked,
+    showNoise: f.all.checked,
     sort: f.sort.value,
   };
   f.unknown.disabled = !state.mem;
@@ -253,7 +264,8 @@ export async function render(section, params) {
     howTo: [
       `<strong>Task</strong> is what the model does (chat, transcribe audio, generate images…).`,
       `<strong>Max size</strong> uses the ${term('memory', 'estimated memory')} needed to load the model. Choose the memory of your GPU or Mac.`,
-      `<strong>License: commercial use allowed</strong> keeps only models with an open ${term('license', 'license')}.`,
+      `<strong>License: open source</strong> keeps only models with an open-source ${term('license', 'license')}. Custom licenses such as Llama or Gemma allow commercial use with conditions; pick the second option to include them.`,
+      'Experiment checkpoints, course exercises, test repos and uploads nobody used are hidden unless you tick <strong>Show low-signal uploads</strong>.',
       `<strong>Format</strong>: ${term('gguf', 'GGUF')} for Ollama / LM Studio / llama.cpp, ${term('mlx', 'MLX')} for Apple Silicon, ${term('onnx', 'ONNX')} for browsers and mobile.`,
       `${term('gated', 'Gated')} models need you to request access first; hide them if you want something you can download right away.`,
     ],
@@ -273,8 +285,9 @@ export async function render(section, params) {
       <div class="field"><label for="f-lic">License</label>
         <select id="f-lic" name="lic">
           <option value="">Any license</option>
-          <option value="commercial">Commercial use allowed</option>
-          <option value="known">Clearly declared (open or non-commercial)</option>
+          <option value="commercial">Open source (commercial use allowed)</option>
+          <option value="commercial-terms">Commercial use, including custom terms (Llama, Gemma…)</option>
+          <option value="known">Clearly declared</option>
           <option value="noncommercial">Non-commercial only</option>
           <option value="unclear">Unclear / not declared</option>
         </select></div>
@@ -290,6 +303,7 @@ export async function render(section, params) {
         <label><input type="checkbox" name="gated"> Hide gated models</label>
         <label><input type="checkbox" name="chat"> Chat / instruct models only</label>
         <label><input type="checkbox" name="unknown"> Include models of unknown size</label>
+        <label title="Experiment checkpoints, course exercises, test repos and uploads with no downloads or likes after a week"><input type="checkbox" name="all"> Show low-signal uploads</label>
         <button type="reset" class="btn" id="f-reset">Reset filters</button>
       </div>
     </form>

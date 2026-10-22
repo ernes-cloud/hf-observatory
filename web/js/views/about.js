@@ -8,7 +8,7 @@ const FIELDS = [
   ['author', 'Organization or user that publishes the model.'],
   ['created_at / updated_at', 'Creation and last-modification dates on the Hub.'],
   ['license', 'License as declared on the model card (raw).'],
-  ['license_family', 'The dataset’s own classification: oss (open license, commercial use allowed), non-commercial, or unknown (missing, “other” or ambiguous).'],
+  ['license_family', 'The dataset’s own classification (oss, non-commercial, unknown). This site replaces it with its own four classes; see “How the data is cleaned” below.'],
   ['pipeline_tag', 'Main task, e.g. text-generation.'],
   ['library', 'Library the model targets (transformers, gguf, diffusers…).'],
   ['languages', 'Languages declared on the model card.'],
@@ -68,9 +68,30 @@ export async function render(section) {
       publishes the static site on GitHub Pages. A scheduled GitHub Actions workflow repeats this every day.
       Download figures are rolling 30-day windows, so a change between two snapshots compares two overlapping windows.
       Memory estimates in the finder are rough: parameters × bytes per parameter plus 15%.</p>
+      <h2 id="cleaning">How the data is cleaned</h2>
+      <p>The dataset copies what the Hub reports, and some of it misleads when counted naively. Before building any page the pipeline:</p>
+      <ul>
+        <li><strong>Reclassifies licenses</strong> into four classes: <em>open source</em> (Apache, MIT, BSD, CC-BY, GPL…: commercial use allowed),
+        <em>open with conditions</em> (custom licenses such as Llama, Gemma, OpenRAIL or NVIDIA Open Model: commercial use usually allowed,
+        with usage policies or user caps), <em>non-commercial</em> (CC-BY-NC, research-only, Qwen Research…) and <em>not declared</em>.
+        The dataset itself counts Llama, Gemma and even Qwen Research as “oss”.</li>
+        <li><strong>Flags low-signal uploads</strong>: seed / step / checkpoint sweeps, course exercises (<code>ppo-LunarLander</code>…), test repos
+        and uploads with no downloads or likes after a week${meta?.quality ? ` (${int(meta.quality.noise)} live models today)` : ''}.
+        They stay searchable in the finder but are left out of rankings, counts by category and the newsletter.</li>
+        <li><strong>Counts copied download figures once</strong>: sibling repos of one publisher sometimes report exactly the same 30-day downloads
+        (a GGUF and an “uncensored” copy, V7…V12 of the same merge). Totals count that figure once${meta?.quality ? ` (${int(meta.quality.copied_downloads)} repos, ${int(meta.quality.copied_downloads_total)} downloads)` : ''}.</li>
+        <li><strong>Fixes sizes</strong> when the Hub count is far below the size written in the name: packed 4-bit, NVFP4 or 1-bit weights are
+        counted as fewer parameters, so a 27B GGUF can show as 0.46B${meta?.quality ? ` (${int(meta.quality.params_fixed)} models)` : ''}.</li>
+        <li><strong>Explains removals</strong>: a removed model is <em>replaced</em> when its publisher uploaded a near-identical name around the same time,
+        <em>same name elsewhere</em> when a repository with that name is live under another account, and an <em>unused experiment</em> when it never had traction.</li>
+        <li><strong>Detects families from the repo name and base model only</strong>, never the publisher’s name, and ignores tools that merely contain
+        a family name (Ollama, llama.cpp, HuBERT).</li>
+        <li><strong>Refuses partial exports</strong>: a build stops if columns the site needs are missing or retyped, or if the export holds fewer than
+        80% of the models of the last good build, so the site keeps the previous data instead of publishing a broken one.</li>
+      </ul>
       <h2>Caveats</h2>
       <ul>
-        <li>The radar started in August 2026; anything before that is reconstructed from creation dates and under-represents older models.</li>
+        <li>The radar started tracking on ${esc(meta?.tracking_start || 'August 19, 2026')}; anything created before that appears only if the radar picked it up later, so older models are under-represented.</li>
         <li>The model population grows over time as the radar tracks more models, so totals across snapshots are not like-for-like.</li>
         <li>License classification and family detection are heuristic. Always check the original model card before using a model in production.</li>
       </ul>

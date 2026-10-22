@@ -43,7 +43,7 @@ def build(con) -> dict:
                formats, parameters, ({MEMORY_SQL}) / 1e9 AS mem_gb, downloads_30d, likes,
                trending_score, gated, is_conversational, n_benchmarks,
                CAST(epoch(created_at) / 86400 AS INTEGER) AS created_day,
-               list_contains(tags, 'merge') OR list_contains(tags, 'mergekit') AS is_merge
+               list_contains(tags, 'merge') OR list_contains(tags, 'mergekit') AS is_merge, noise
         FROM m WHERE NOT removed
         ORDER BY downloads_30d DESC, likes DESC""")
 
@@ -56,7 +56,7 @@ def build(con) -> dict:
         return [k for k, c in sorted(counts.items(), key=lambda kv: -kv[1]) if c >= min_count]
 
     tasks, task_idx = _encode([r["pipeline_tag"] for r in data], dictionary("pipeline_tag"))
-    fams = ["oss", "non-commercial", "unknown"]
+    fams = ["oss", "non-commercial", "unknown", "conditional"]
     _, fam_idx = _encode([r["license_family"] for r in data], fams)
     licenses, lic_idx = _encode([r["license"] for r in data], dictionary("license"))
     libs, lib_idx = _encode([r["library"] for r in data], dictionary("library"))
@@ -73,7 +73,8 @@ def build(con) -> dict:
         return sum(1 << FORMATS.index(f) for f in fs or [] if f in FORMATS)
 
     def flags(r) -> int:
-        return (1 if r["gated"] else 0) | (2 if r["is_conversational"] else 0) | (4 if r["is_merge"] else 0)
+        return ((1 if r["gated"] else 0) | (2 if r["is_conversational"] else 0) | (4 if r["is_merge"] else 0)
+                | (8 if r["noise"] else 0))
 
     return {
         "count": len(data),
@@ -81,7 +82,7 @@ def build(con) -> dict:
             "task": tasks, "license_family": fams, "license": licenses, "library": libs,
             "base_model": bases, "language": langs, "format": FORMATS,
         },
-        "flags": {"gated": 1, "conversational": 2, "merge": 4},
+        "flags": {"gated": 1, "conversational": 2, "merge": 4, "noise": 8},
         "cols": {
             "id": [r["id"] for r in data],
             "task": task_idx,

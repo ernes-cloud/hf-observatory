@@ -2,9 +2,9 @@ import { load } from '../data.js';
 import { term } from '../glossary.js';
 import { pageHeader } from '../ui.js';
 import { barList, card, columnChart, shareBar, stats, tableHtml } from '../charts.js';
-import { authorUrl, compact, date, days, esc, int, LICENSE_FAMILY, params as fmtParams, pct, shortDate, task } from '../format.js';
+import { authorUrl, compact, hfUrl, date, days, esc, int, LF_COLOR, LF_ORDER, LICENSE_FAMILY, params as fmtParams, pct, REMOVAL_KIND, shortDate, task } from '../format.js';
 
-const LF_COLOR = { oss: 'var(--series-1)', unknown: 'var(--axis)', 'non-commercial': 'var(--series-2)' };
+const KIND_COLOR = { removed: 'var(--series-2)', replaced: 'var(--series-1)', rehosted: 'var(--series-3)', cleanup: 'var(--axis)' };
 const PAGE = 50;
 
 export async function render(section) {
@@ -18,13 +18,14 @@ export async function render(section) {
       Since ${esc(date(t.first_detected))} it has found <strong>${int(t.removed)}</strong> ${term('removed', 'removed')} models.`,
     takeaways: [
       { value: pct(quick / t.removed), text: 'of removed models lasted less than a week. Most removals are quick experiments, not established models.' },
-      { value: days(t.median_lifespan_days), text: 'was the typical (median) lifetime of a removed model' },
+      { value: pct((t.kind_cleanup || 0) / t.removed), text: 'never had a download or a like: clean-up of tests and experiments' },
       { value: `${(t.gated_share_removed / t.gated_share_live).toFixed(1)}×`, text: `${term('gated', 'Gated')} models are this much more common among removed models than among live ones` },
       { value: topRemover ? int(topRemover.removed) : '–', text: topRemover ? `models removed by <strong>${esc(topRemover.author)}</strong>, the publisher that deleted the most` : '' },
     ],
     howTo: [
       'Removal dates are when the dataset noticed the model was gone, not the exact moment it was deleted.',
       'Downloads and likes are the last values seen before the model disappeared.',
+      '<strong>What happened</strong> is inferred from the data: a near-identical name from the same publisher means the model was <em>replaced</em>; the same name live under another account means a mirror, a re-upload or the original lives on.',
       'The full list at the bottom can be searched and sorted. Removed models have no working link, so names are not clickable.',
     ],
   }));
@@ -33,6 +34,7 @@ export async function render(section) {
     { label: 'Removed models', value: int(t.removed), sub: `${pct(t.removed / t.tracked)} of everything tracked`, hero: true },
     { label: 'Median lifespan', value: days(t.median_lifespan_days), sub: 'from creation on the Hub to detected removal' },
     { label: 'Had real traction', value: int(t.removed_with_traction), sub: 'removed with ≥ 1,000 downloads in their last 30 days' },
+    { label: 'Replaced or elsewhere', value: int((t.kind_replaced || 0) + (t.kind_rehosted || 0)), sub: 'a newer upload or the same name is still live' },
     { label: 'Gated', value: pct(t.gated_share_removed), sub: `of removed models, vs ${pct(t.gated_share_live)} of live ones` },
     { label: 'Unclear license', value: pct(t.unclear_share_removed), sub: `of removed models, vs ${pct(t.unclear_share_live)} of live ones` },
   ]));
@@ -51,6 +53,23 @@ export async function render(section) {
     table: { columns: [{ key: 'author', label: 'Publisher' }, { key: 'removed', label: 'Removed', num: true, fmt: int }, { key: 'tracked', label: 'Tracked', num: true, fmt: int }, { key: 'downloads', label: 'Downloads before removal', num: true, fmt: int }], rows: g.by_author },
   }));
 
+  if (g.kinds) {
+    const kinds = g.kinds.map((k) => ({ k, n: t[`kind_${k}`] || 0 }));
+    grid.append(card({
+      title: 'What happened to them', sub: 'Inferred from what is still live: not every disappearance is a deletion',
+      body: (() => {
+        const div = document.createElement('div');
+        div.append(shareBar(kinds.map(({ k, n }) => ({ label: REMOVAL_KIND[k].label, value: n, color: KIND_COLOR[k] }))));
+        const ul = document.createElement('ul');
+        ul.className = 'kind-list';
+        ul.innerHTML = kinds.map(({ k, n }) => `<li><strong>${esc(REMOVAL_KIND[k].label)}</strong> (${int(n)}): ${esc(REMOVAL_KIND[k].long)}.</li>`).join('');
+        div.append(ul);
+        return div;
+      })(),
+      table: { columns: [{ key: 'label', label: 'What happened' }, { key: 'n', label: 'Models', num: true, fmt: int }], rows: kinds.map(({ k, n }) => ({ label: REMOVAL_KIND[k].label, n })) },
+    }));
+  }
+
   grid.append(card({
     title: 'How long they lived', sub: 'Time between creation on the Hub and detected removal',
     body: barList(g.lifespan.map((l) => ({ label: l.bucket, value: l.models, display: `${int(l.models)} · ${pct(l.models / t.removed)}` }))),
@@ -67,7 +86,7 @@ export async function render(section) {
   }));
 
   const licBody = document.createElement('div');
-  const famOrder = ['oss', 'unknown', 'non-commercial'];
+  const famOrder = LF_ORDER;
   const lic = Object.fromEntries(g.license.map((l) => [l.family, l]));
   for (const [key, label] of [['removed', 'Removed models'], ['live', 'Live models']]) {
     const h = document.createElement('h3');
@@ -95,16 +114,19 @@ export async function render(section) {
     <div class="card-head"><div><h2>Every removed model</h2><p class="sub">Downloads and likes are the last values seen before removal. Links are gone, so models are not linked.</p></div></div>
     <div class="filters" style="margin-bottom:10px">
       <div class="field"><label for="g-q">Search</label><input type="search" id="g-q" placeholder="Model or publisher" autocomplete="off"></div>
+      <div class="field"><label for="g-kind">What happened</label><select id="g-kind"><option value="">Any</option>
+        ${(g.kinds || []).map((k) => `<option value="${k}">${esc(REMOVAL_KIND[k].label)}</option>`).join('')}</select></div>
       <div class="field"><label for="g-sort">Sort by</label><select id="g-sort">
         <option value="downloads">Downloads before removal</option><option value="removed_at">Most recently removed</option>
         <option value="lifespan_desc">Longest lived</option><option value="lifespan">Shortest lived</option><option value="likes">Likes</option></select></div>
-      <div class="field checks" style="align-self:end"><label><input type="checkbox" id="g-gated"> Gated only</label><label><input type="checkbox" id="g-unclear"> Unclear license only</label></div>
+      <div class="field checks" style="align-self:end"><label><input type="checkbox" id="g-gated"> Gated only</label><label><input type="checkbox" id="g-unclear"> License not declared</label></div>
     </div>
     <p class="result-count" id="g-count" role="status" aria-live="polite"></p>
     <div class="table-wrap" id="g-table"></div>
     <div class="more-row"><button type="button" class="btn" id="g-more">Show more</button></div>`;
   grid.append(list);
 
+  const kindSel = list.querySelector('#g-kind');
   const q = list.querySelector('#g-q'), sort = list.querySelector('#g-sort'), gated = list.querySelector('#g-gated'), unclear = list.querySelector('#g-unclear');
   const tableEl = list.querySelector('#g-table'), countEl = list.querySelector('#g-count'), more = list.querySelector('#g-more');
   let shown = PAGE, filtered = all;
@@ -113,6 +135,7 @@ export async function render(section) {
     { key: 'task', label: 'Task', fmt: (v) => (v ? task(v) : '–') },
     { key: 'params', label: 'Size', num: true, fmt: (v) => fmtParams(v) || '–' },
     { key: 'lf', label: 'License', fmt: (v, r) => r.license || LICENSE_FAMILY[v]?.label },
+    { key: 'kind', label: 'What happened', html: (v, r) => (v ? `<span title="${esc(REMOVAL_KIND[v]?.long || '')}">${esc(REMOVAL_KIND[v]?.label || v)}</span>${r.successor ? `<br><a class="note" href="${esc(hfUrl(r.successor))}" target="_blank" rel="noopener">${esc(r.successor)}</a>` : ''}` : '–') },
     { key: 'gated', label: 'Gated', fmt: (v) => (v ? 'Yes' : '') },
     { key: 'created', label: 'Created', num: true, fmt: date },
     { key: 'removed_at', label: 'Removed', num: true, fmt: date },
@@ -126,7 +149,7 @@ export async function render(section) {
   };
   const apply = () => {
     const terms = q.value.toLowerCase().split(/\s+/).filter(Boolean);
-    filtered = all.filter((m) => (!gated.checked || m.gated) && (!unclear.checked || m.lf === 'unknown')
+    filtered = all.filter((m) => (!gated.checked || m.gated) && (!unclear.checked || m.lf === 'unknown') && (!kindSel.value || m.kind === kindSel.value)
       && terms.every((t) => m.id.toLowerCase().includes(t)));
     const s = sort.value;
     const key = {
@@ -139,7 +162,7 @@ export async function render(section) {
   };
   let timer;
   q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(apply, 150); });
-  [sort, gated, unclear].forEach((x) => x.addEventListener('change', apply));
+  [sort, gated, unclear, kindSel].forEach((x) => x.addEventListener('change', apply));
   more.addEventListener('click', () => { shown += PAGE; draw(); });
   apply();
 }

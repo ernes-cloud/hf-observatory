@@ -14,13 +14,15 @@ from xml.sax.saxutils import escape
 
 from .common import rows
 from .sources import MONDAY_MAJOR, version_day
-from .trends import closest_before, parse_ts
+from .trends import FADING_FLOOR, closest_before, parse_ts
 
 SITE_URL = os.environ.get("SITE_URL", "https://ernes-cloud.github.io/hf-observatory/")
 MAX_ISSUES = 26
 
 TASK_SPECIAL = {"any-to-any": "any-to-any", "text2text-generation": "text-to-text generation"}
-LICENSE_LABEL = {"oss": "open license", "non-commercial": "non-commercial", "unknown": "unclear license"}
+LICENSE_LABEL = {"oss": "open source", "conditional": "open with conditions", "non-commercial": "non-commercial",
+                 "unknown": "license not declared"}
+KIND_NOTE = {"replaced": "replaced by a newer upload", "rehosted": "same name still live elsewhere"}
 
 
 # ---------------------------------------------------------------- formatting
@@ -87,14 +89,20 @@ def issue(con, snaps: list[dict], old: int, new: int) -> dict:
         SELECT * FROM nw WHERE created_at > TIMESTAMPTZ '{ts_a}+00' AND created_at <= TIMESTAMPTZ '{ts_b}+00'""")
     con.execute(f"""
         CREATE OR REPLACE TEMP VIEW gone AS
-        SELECT b.*, coalesce(a.downloads_30d, b.downloads_30d) AS last_downloads
+        SELECT b.*, coalesce(a.downloads_30d, b.downloads_30d) AS last_downloads,
+               coalesce(k.removal_kind, 'removed') AS kind, k.successor
         FROM (SELECT * FROM h WHERE s = {new} AND removed) b
         LEFT JOIN (SELECT * FROM h WHERE s = {old}) a USING (id)
+        LEFT JOIN (SELECT id, removal_kind, successor FROM m) k USING (id)
         WHERE (a.id IS NULL OR NOT a.removed) AND b.removed_at > TIMESTAMPTZ '{ts_a}+00'""")
+    # Newcomers worth naming: not noise, not already gone again, with some traction.
+    con.execute("""
+        CREATE OR REPLACE TEMP VIEW notable AS
+        SELECT * FROM fresh WHERE NOT noise AND NOT removed AND (likes > 0 OR downloads_30d >= 50)""")
     con.execute(f"""
         CREATE OR REPLACE TEMP VIEW moves AS
         SELECT b.id, b.author, b.pipeline_tag, a.downloads_30d AS old, b.downloads_30d AS new,
-               b.downloads_30d - a.downloads_30d AS delta
+               b.downloads_30d - a.downloads_30d AS delta, b.noise
         FROM (SELECT * FROM h WHERE s = {new} AND NOT removed) b
         JOIN (SELECT * FROM h WHERE s = {old} AND NOT removed) a USING (id)""")
 
@@ -102,24 +110,33 @@ def issue(con, snaps: list[dict], old: int, new: int) -> dict:
         SELECT (SELECT count(*) FROM nw) AS newly_tracked,
                (SELECT count(*) FROM fresh) AS created,
                (SELECT count(*) FROM gone) AS removed,
+               (SELECT count(*) FROM gone WHERE kind = 'cleanup') AS removed_cleanup,
+               (SELECT count(*) FROM gone WHERE kind = 'replaced') AS removed_replaced,
+               (SELECT count(*) FROM fresh WHERE noise) AS created_noise,
                (SELECT count(*) FROM h WHERE s = {new} AND NOT removed) AS live_now,
                (SELECT count(*) FROM h WHERE s = {old} AND NOT removed) AS live_before,
                (SELECT count(DISTINCT author) FROM fresh) AS new_authors_active,
                (SELECT avg((license_family = 'oss')::INT) FROM fresh) AS fresh_open_share,
+               (SELECT avg((license_family = 'conditional')::INT) FROM fresh) AS fresh_conditional_share,
                (SELECT avg(gated::INT) FROM fresh) AS fresh_gated_share""")[0]
 
     cols = "id, author, pipeline_tag AS task, parameters, license_family AS lf, downloads_30d AS downloads, likes, family"
-    top_new = rows(con, f"SELECT {cols} FROM fresh ORDER BY downloads_30d DESC, likes DESC LIMIT 10")
-    liked_new = rows(con, f"SELECT {cols} FROM fresh WHERE likes > 0 ORDER BY likes DESC LIMIT 5")
+    top_new = rows(con, f"SELECT {cols} FROM notable ORDER BY downloads_30d DESC, likes DESC LIMIT 10")
+    liked_new = rows(con, f"SELECT {cols} FROM notable WHERE likes > 0 ORDER BY likes DESC LIMIT 5")
+    # Removals worth naming: real ones and copies whose name lives on elsewhere; replaced
+    # uploads and never-used experiments are only counted.
     removals = rows(con, """SELECT id, author, pipeline_tag AS task, last_downloads AS downloads, likes, gated,
-                                   license_family AS lf, strftime(created_at, '%Y-%m-%d') AS created
-                            FROM gone ORDER BY last_downloads DESC, likes DESC LIMIT 8""")
-    removers = rows(con, "SELECT author, count(*) AS models FROM gone GROUP BY 1 HAVING count(*) > 1 ORDER BY 2 DESC LIMIT 5")
-    rising = rows(con, "SELECT id, author, pipeline_tag AS task, old, new, delta FROM moves WHERE delta > 0 ORDER BY delta DESC LIMIT 8")
-    fading = rows(con, "SELECT id, author, pipeline_tag AS task, old, new, delta FROM moves WHERE delta < 0 ORDER BY delta LIMIT 5")
-    publishers = rows(con, "SELECT author, count(*) AS models, sum(downloads_30d) AS downloads FROM fresh GROUP BY 1 ORDER BY 2 DESC, 3 DESC LIMIT 6")
-    fam = rows(con, "SELECT coalesce(family, 'Other / undetected') AS family, count(*) AS models FROM fresh GROUP BY 1 ORDER BY 2 DESC LIMIT 7")
-    tasks = rows(con, "SELECT pipeline_tag AS task, count(*) AS models FROM fresh WHERE pipeline_tag IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 5")
+                                   license_family AS lf, strftime(created_at, '%Y-%m-%d') AS created, kind, successor
+                            FROM gone WHERE kind IN ('removed', 'rehosted')
+                            ORDER BY last_downloads DESC, likes DESC LIMIT 8""")
+    removers = rows(con, """SELECT author, count(*) AS models FROM gone WHERE kind <> 'cleanup'
+                            GROUP BY 1 HAVING count(*) > 1 ORDER BY 2 DESC LIMIT 5""")
+    rising = rows(con, "SELECT id, author, pipeline_tag AS task, old, new, delta FROM moves WHERE delta > 0 AND NOT noise ORDER BY delta DESC LIMIT 8")
+    fading = rows(con, f"""SELECT id, author, pipeline_tag AS task, old, new, delta FROM moves
+                           WHERE delta < 0 AND old >= {FADING_FLOOR} AND NOT noise ORDER BY new * 1.0 / old, delta LIMIT 5""")
+    publishers = rows(con, "SELECT author, count(*) AS models, sum(dl) AS downloads FROM notable GROUP BY 1 ORDER BY 2 DESC, 3 DESC LIMIT 6")
+    fam = rows(con, "SELECT coalesce(family, 'Other / undetected') AS family, count(*) AS models FROM fresh WHERE NOT noise GROUP BY 1 ORDER BY 2 DESC LIMIT 7")
+    tasks = rows(con, "SELECT pipeline_tag AS task, count(*) AS models FROM fresh WHERE pipeline_tag IS NOT NULL AND NOT noise GROUP BY 1 ORDER BY 2 DESC LIMIT 5")
 
     # Titles use the day encoded in the version (exports run early in the morning,
     # so the data's own timestamps can fall on the previous evening in UTC).
@@ -150,22 +167,25 @@ def _intro(stats, top_new, removals, rising, publishers) -> list[str]:
     )
     if top_new:
         t = top_new[0]
-        size = params(t["parameters"])
+        kind = " ".join(b for b in (params(t["parameters"]), task(t["task"]) if t["task"] else "") if b)
         p.append(
-            f"The week's most downloaded newcomer is {t['id']}, a {size + ' ' if size else ''}{task(t['task'])} "
+            f"The week's most downloaded newcomer is {t['id']}, a {kind + ' ' if kind else ''}"
             f"model with {compact(t['downloads'])} downloads already."
         )
     if publishers:
         pub = publishers[0]
-        p.append(f"The busiest publisher was {pub['author']}, with {plural(pub['models'], 'new model')}.")
+        p.append(f"The busiest publisher was {pub['author']}, with {plural(pub['models'], 'new model')} that drew downloads or likes.")
     if rising:
         r = rising[0]
         p.append(f"Among established models, {r['id']} gained the most ground (+{compact(r['delta'])} downloads over the 30-day window).")
     if removals and removals[0]["downloads"]:
         g = removals[0]
-        p.append(f"The most notable removal was {g['id']}, which had {compact(g['downloads'])} downloads before it vanished.")
+        p.append(f"The most notable removal was {g['id']}, which had {compact(g['downloads'])} downloads before it vanished"
+                 + (f" (a repo with the same name is still live at {g['successor']})." if g["kind"] == "rehosted" else "."))
     if stats["fresh_open_share"] is not None:
-        p.append(f"{pct(stats['fresh_open_share'])} of this week's new models carry an open license that allows commercial use.")
+        p.append(f"{pct(stats['fresh_open_share'])} of this week's new models carry an open-source license that allows "
+                 f"commercial use, and {pct(stats['fresh_conditional_share'] or 0)} come with custom terms (Llama, Gemma, "
+                 "OpenRAIL and similar).")
     return p
 
 
@@ -180,7 +200,8 @@ def to_markdown(d: dict) -> str:
     s = d["stats"]
     out += ["## In numbers", "",
             f"- **{n(s['created'])}** new models created on the Hub (and {n(s['newly_tracked'])} newly tracked in total)",
-            f"- **{n(s['removed'])}** models removed",
+            f"- **{n(s['removed'])}** models removed ({n(s['removed_cleanup'])} were experiments nobody used, "
+            f"{n(s['removed_replaced'])} were replaced by a newer upload)",
             f"- **{n(s['live_now'])}** live models tracked ({'+' if s['live_now'] >= s['live_before'] else '−'}{n(abs(s['live_now'] - s['live_before']))})", ""]
     if d["top_new"]:
         out += ["## Top new models", ""]
@@ -199,12 +220,15 @@ def to_markdown(d: dict) -> str:
         out.append("")
     if d["removals"]:
         out += ["## Removals", ""]
-        out += [f"- {m['id']} — {compact(m['downloads'])} downloads before removal" + (", gated" if m["gated"] else "") + (", unclear license" if m["lf"] == "unknown" else "") for m in d["removals"]]
+        out += [f"- {m['id']} — {compact(m['downloads'])} downloads before removal" + (", gated" if m["gated"] else "")
+                + (", license not declared" if m["lf"] == "unknown" else "")
+                + (f"; {KIND_NOTE[m['kind']]}: {m['successor']}" if m.get("kind") in KIND_NOTE and m.get("successor") else "")
+                for m in d["removals"]]
         if d["removers"]:
             out += ["", "Publishers removing the most: " + ", ".join(f"{r['author']} ({r['models']})" for r in d["removers"]) + "."]
         out.append("")
     if d["publishers"]:
-        out += ["## Most active publishers", ""]
+        out += ["## Most active publishers", "", "New models that drew downloads or likes (experiment sweeps and test uploads left out):", ""]
         out += [f"- [{p['author']}](https://huggingface.co/{p['author']}): {plural(p['models'], 'new model')}" for p in d["publishers"]]
         out.append("")
     if d["families"]:

@@ -18,7 +18,8 @@ sys.path.insert(0, str(ROOT))
 
 import build  # noqa: E402
 from hfo.families import family_case_sql  # noqa: E402
-from hfo.sources import MONDAY_MAJOR, Version, pick_history, snapshot_time  # noqa: E402
+from hfo.quality import fixed_params, license_class, named_params  # noqa: E402
+from hfo.sources import MONDAY_MAJOR, Version, check_latest, pick_history, snapshot_time  # noqa: E402
 
 
 def model(id_, **kw):
@@ -87,6 +88,14 @@ def test_family_detection():
         ("microsoft/phi-4", None): "Phi",
         ("BAAI/bge-m3", None): "BERT-style",
         ("random/thing", None): None,
+        # the author never decides the family, and tools named after one don't belong to it
+        ("llama-fan/my-classifier", None): None,
+        ("someone/Q36-Coder-Ollama", "Qwen/Qwen3.6-27B"): "Qwen",
+        ("someone/whisper-to-llama.cpp-notes", None): "Whisper",
+        ("facebook/hubert-large", None): None,
+        ("allenai/MolmoAct2-7B", None): None,
+        ("google/flan-t5-base", None): "T5",
+        ("openai-community/gpt2", None): "GPT-2",
     }
     for (id_, base), expected in cases.items():
         got = con.execute(f"SELECT {family_case_sql('i', 'b')} FROM (SELECT ? AS i, ? AS b)", [id_, base]).fetchone()[0]
@@ -128,11 +137,12 @@ def test_snapshot_time_trusts_version_for_rebuilt_releases():
 
 
 def test_trends_and_newsletter(built, tmp_path):
-    from hfo import newsletter, trends
+    from hfo import newsletter, quality, trends
     from hfo.common import connect
 
     con = connect()
     con.execute(f"CREATE TABLE m AS SELECT * FROM '{(tmp_path / 'cache' / 'latest.parquet').as_posix()}'")
+    quality.apply(con, "2026-10-19T04:00:00Z")
     # A Monday snapshot a week earlier (v54 = Oct 12) where Qwen had fewer downloads,
     # the GGUF did not exist yet and the removed model was still live.
     old = tmp_path / "v54.parquet"
@@ -284,3 +294,90 @@ def test_externals_parsers():
     row = parse_benchmark_issue({"body": body, "html_url": "https://github.com/x/y/issues/1"})
     assert row == {"model": "Qwen/Qwen3-30B-A3B", "hw": "rtx-4090", "rt": "llamacpp", "q": "Q4_K_M", "tg": 150.5, "src": "https://github.com/x/y/issues/1"}
     assert parse_benchmark_issue({"body": "### Model (Hugging Face id)\n\nnot a model\n"}) is None
+
+
+def test_license_classes():
+    cases = {
+        "apache-2.0": "oss", "mit-and-apache-2.0": "oss", "cc-by-4.0": "oss", "gpl-3.0": "oss",
+        "llama3.1": "conditional", "gemma": "conditional", "creativeml-openrail-m": "conditional",
+        "nvidia-open-model-license": "conditional", "apache-2.0-and-gemma": "conditional",
+        "qwen-research": "non-commercial", "cc-by-nc-4.0": "non-commercial", "research-only": "non-commercial",
+        "other": "unknown", None: "unknown", "": "unknown",
+    }
+    for lic, want in cases.items():
+        assert license_class(lic) == want, lic
+
+
+def test_sizes_from_names():
+    assert named_params("a/Qwen3-30B-A3B-GGUF") == 30e9
+    assert named_params("a/qwen3_0_6b_sft") == pytest.approx(0.6e9)
+    assert named_params("a/bee-350m-pt-base-15b") is None  # 15b is training tokens
+    assert named_params("a/run-09a026ee-cd60-466b-b028") is None  # a UUID, not a size
+    assert fixed_params("a/Qwopus3.8-27B-Flash-GGUF", 460_730_096) == 27_000_000_000  # packed weights
+    assert fixed_params("a/LFM2.5-8B-A1B-DSpark", 327_707_521) == 327_707_521  # a draft model really is small
+    assert fixed_params("a/Qwen3-8B", 8_190_000_000) == 8_190_000_000
+
+
+QUALITY_FIXTURE = [
+    model("Qwen/Qwen3-8B", downloads_30d=1000, likes=50, tags=["text-generation"], languages=["en"]),
+    model("someone/qwen-tune", base_model="Qwen/Qwen3-8B", downloads_30d=200, likes=2),
+    model("lab/real-model", downloads_30d=5000, likes=12),
+    model("sweeper/run-seed42", downloads_30d=3, likes=0),
+    model("student/ppo-LunarLander-v2", downloads_30d=40, likes=1),
+    model("quiet/never-used", downloads_30d=0, likes=0, created_at="2026-09-01T00:00:00.000Z"),
+    model("dup/Model-GGUF", downloads_30d=2_788_283, likes=9),
+    model("dup/Model-Uncensored-GGUF", downloads_30d=2_788_283, likes=2),
+    model("merger/Hermes-V13-GGUF", removed=True, removed_at="2026-10-12T00:00:00.000Z", downloads_30d=900, likes=4,
+          created_at="2026-10-09T00:00:00.000Z"),
+    model("merger/Hermes-V14-GGUF", created_at="2026-10-11T00:00:00.000Z", downloads_30d=500, likes=3),
+    model("copycat/DeepSeek-V4.1-Flash", removed=True, removed_at="2026-10-12T00:00:00.000Z", downloads_30d=14_900),
+    model("deepseek-ai/DeepSeek-V4.1-Flash", downloads_30d=900_000, likes=2000),
+    model("tester/scratch", removed=True, removed_at="2026-10-12T00:00:00.000Z", downloads_30d=0, likes=0),
+]
+
+
+@pytest.fixture()
+def built_quality(tmp_path):
+    gz = tmp_path / "models.jsonl.gz"
+    with gzip.open(gz, "wt", encoding="utf-8") as fh:
+        for m in QUALITY_FIXTURE:
+            fh.write(json.dumps(m) + "\n")
+    out = tmp_path / "data"
+    build.main(["--out", str(out), "--cache", str(tmp_path / "cache"), "--latest-gz", str(gz), "--no-history"])
+    return out
+
+
+def test_noise_copies_and_removals(built_quality):
+    meta = json.loads((built_quality / "meta.json").read_text())
+    assert meta["quality"]["noise"] == 3  # the sweep, the course exercise and the never-used upload
+    assert meta["quality"]["copied_downloads"] == 1
+    ov = json.loads((built_quality / "overview.json").read_text())
+    t = ov["totals"]
+    assert t["noise"] == 3 and t["signal"] == t["live"] - 3
+    # the copied 2.79M counts once in the totals
+    assert t["downloads_30d"] == 1000 + 200 + 5000 + 3 + 40 + 0 + 2_788_283 + 500 + 900_000
+    by_author = {o["author"]: o for o in ov["top_orgs_by_downloads"]}
+    assert by_author["dup"]["downloads"] == 2_788_283
+    assert "sweeper" not in {o["author"] for o in ov["top_orgs_by_count"]}
+    g = json.loads((built_quality / "graveyard.json").read_text())
+    kinds = {r[0]: r[g["models"]["columns"].index("kind")] for r in g["models"]["rows"]}
+    assert kinds == {"merger/Hermes-V13-GGUF": "replaced", "copycat/DeepSeek-V4.1-Flash": "rehosted",
+                     "tester/scratch": "cleanup"}
+    assert [m["id"] for m in g["notable"]] == ["copycat/DeepSeek-V4.1-Flash"]
+    f = json.loads((built_quality / "finder.json").read_text())
+    noisy = {f["cols"]["id"][i] for i, fl in enumerate(f["cols"]["flags"]) if fl & f["flags"]["noise"]}
+    assert noisy == {"sweeper/run-seed42", "student/ppo-LunarLander-v2", "quiet/never-used"}
+
+
+def test_check_latest_refuses_broken_exports(tmp_path):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE m AS SELECT 'a/b' AS id")
+    with pytest.raises(RuntimeError, match="schema changed"):
+        check_latest(con, {"models": 1, "snapshot_at": "x"}, tmp_path)
+    con.execute("""CREATE OR REPLACE TABLE m AS SELECT 'a/b' AS id, 'a' AS author, now() AS created_at, 'mit' AS license,
+                   'x' AS pipeline_tag, ['t'] AS tags, 1 AS likes, 1 AS downloads_30d, 1 AS parameters, ['gguf'] AS formats,
+                   false AS gated, false AS removed, now() AS removed_at""")
+    check_latest(con, {"models": 1000, "snapshot_at": "x"}, tmp_path)
+    check_latest(con, {"models": 900, "snapshot_at": "y"}, tmp_path)
+    with pytest.raises(RuntimeError, match="partial"):
+        check_latest(con, {"models": 500, "snapshot_at": "z"}, tmp_path)

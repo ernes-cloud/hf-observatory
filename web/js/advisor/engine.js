@@ -598,7 +598,7 @@ export function recommend(data, s, today = Math.floor(Date.now() / 86400000)) {
 
   for (const m of data.models) {
     if (!use.tasks.includes(m.task)) continue;
-    if (s.commercial && m.lf !== 'oss') continue;
+    if (s.commercial && m.lf !== 'oss' && m.lf !== 'conditional') continue;
     if (s.hideGated && m.gated) continue;
     if (!s.uncensored && has(m, 'uncensored')) continue;
     if (s.officialOnly && !OFFICIAL.has(m.id.split('/')[0].toLowerCase())) continue;

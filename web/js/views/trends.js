@@ -1,6 +1,6 @@
 import { load } from '../data.js';
 import { term } from '../glossary.js';
-import { pageHeader } from '../ui.js';
+import { coverageNote, pageHeader } from '../ui.js';
 import { card, lineChart, seriesColor, sparkline, stats } from '../charts.js';
 import { authorUrl, compact, date, esc, hfUrl, int, pct, shortDate, signed, signedPct, task } from '../format.js';
 
@@ -8,16 +8,19 @@ let T = null;
 let windowDays = '7';
 
 export async function render(section, params) {
-  T = await load('trends.json');
+  const [trends, meta] = await Promise.all([load('trends.json'), load('meta.json').catch(() => null)]);
+  T = trends;
   const windows = Object.keys(T.windows);
   section.replaceChildren(pageHeader({
     id: 'h-trends', eyebrow: 'Trends', title: 'What is rising and what is fading',
     lead: `How popularity changes over time, measured across ${int(T.snapshots.length)} daily ${term('snapshot', 'snapshots')} from ${esc(date(T.snapshots[0]?.date))} to ${esc(date(T.snapshots.at(-1)?.date))}.`,
+    note: coverageNote(meta, { noise: meta?.quality?.noise }),
     howTo: [
       'Pick a period (7, 14 or 30 days). Every list compares the first and the last day of that period.',
       `${term('downloads', 'Downloads')} are a rolling 30-day count, so “+5M” means the model was downloaded 5 million more times in the latest 30-day window than in the earlier one.`,
       'The small lines (sparklines) show the path in between. A green end dot means up, red means down.',
-      'Only models tracked on both dates are compared. Models that appear for the first time are listed under “New to the radar” instead of “Rising”.',
+      'Only models tracked on both dates are compared. Models created during the period are listed under “New on the Hub” instead of “Rising”.',
+      'Experiment checkpoints, test repos and uploads nobody used are left out of the lists. A trending score that has not moved for several days is treated as stale.',
     ],
   }));
   section.insertAdjacentHTML('beforeend', '<div id="trends-body"></div>');
@@ -83,7 +86,7 @@ function draw(body) {
     { label: 'Live models tracked', value: int(b.live), sub: `${signed(b.live - a.live, int)} in ${windowDays} days` },
     { label: 'Downloads, last 30 days', value: compact(b.downloads), sub: `${signedPct(b.downloads / a.downloads - 1)} vs ${shortDate(snaps[from].date)} (all tracked models)` },
     { label: 'Biggest gainer', value: W.rising[0] ? signed(W.rising[0].delta) : '–', sub: W.rising[0] ? esc(W.rising[0].id) : '' },
-    { label: 'Biggest newcomer', value: W.newcomers[0] ? compact(W.newcomers[0].new) : '–', sub: W.newcomers[0] ? `${esc(W.newcomers[0].id)} (not tracked ${windowDays} days ago)` : '' },
+    { label: 'Biggest newcomer', value: W.newcomers[0] ? compact(W.newcomers[0].new) : '–', sub: W.newcomers[0] ? `${esc(W.newcomers[0].id)} (created in the last ${windowDays} days)` : '' },
   ]));
 
   const grid = document.createElement('div');
@@ -142,15 +145,15 @@ function draw(body) {
 
   const listCard = (title, sub, html) => card({ title, sub, body: html });
   grid.append(listCard('Rising', `Largest gain in 30-day downloads over ${windowDays} days`, moverList(W.rising, { from, to })));
-  grid.append(listCard('Fading', `Largest drop in 30-day downloads over ${windowDays} days`, moverList(W.fading, { from, to })));
+  grid.append(listCard('Fading', `Largest relative drop in 30-day downloads over ${windowDays} days, among models that had 20,000+`, moverList(W.fading, { from, to })));
   grid.append(listCard('Breakouts', 'Fastest relative growth (at least ×1.5, from 500+ to 5,000+ downloads)', moverList(W.breakout, { from, to, kind: 'ratio', empty: 'No breakouts in this window.' })));
-  grid.append(listCard('New to the radar', `Most downloaded models that were not tracked ${windowDays} days ago (new releases or newly discovered)`, moverList(W.newcomers, { from, to, kind: 'new' })));
+  grid.append(listCard('New on the Hub', `Most downloaded models created in the last ${windowDays} days`, moverList(W.newcomers, { from, to, kind: 'new' })));
   grid.append(listCard('Publishers on the rise', 'Change in summed 30-day downloads of their models', moverList(W.orgs_rising.slice(0, 10), { from, to })));
   grid.append(listCard('Publishers losing ground', 'Change in summed 30-day downloads of their models', moverList(W.orgs_fading.slice(0, 10), { from, to })));
 
   const trending = T.trending;
   grid.append(card({
-    span: 12, title: 'Trending right now', sub: 'Hugging Face trending score at the latest snapshot; the sparkline shows the score over all snapshots',
+    span: 12, title: 'Trending right now', sub: 'Hugging Face trending score at the latest snapshot (scores frozen for 6+ snapshots are left out); the sparkline shows the score over all snapshots',
     body: `<ul class="movers">${trending.map((m) => `<li><span class="name"><a href="${esc(hfUrl(m.id))}" rel="noopener">${esc(m.id)}</a><small>${esc(task(m.task))} · ${compact(m.downloads)} downloads</small></span>${sparkline(T.trending_series[m.id] || [], { label: `Trending score history for ${m.id}` })}<span class="delta">${compact(m.score)}</span></li>`).join('')}</ul>`,
   }));
 }

@@ -43,8 +43,10 @@ export async function render(section) {
       <p class="eyebrow">Hugging Face model ecosystem · updated daily</p>
       <h1 id="h-home">Make sense of the open AI models on Hugging Face</h1>
       <p class="lead">Hugging Face is the main place where open AI models are published. This site follows
-      ${int(t.tracked)} of them every day and turns the raw numbers into answers: which model suits your project,
+      ${int(t.tracked)} of them every day (${int(t.live)} still online) and turns the raw numbers into answers: which model suits your project,
       what is gaining popularity, who builds on whom, and what disappeared.</p>
+      <p class="note">The models are the ones picked up by the <a href="https://radar-huggingface.686f6c61.dev" rel="noopener">HF//RADAR</a>
+      dataset, a curated selection of what trends on Hugging Face, not every model on the Hub. <a href="#about">More about the data →</a></p>
       <div class="hero-actions">
         <a class="btn btn-primary" href="#advisor">Get a model recommendation</a>
         <a class="btn btn-ghost" href="#finder">Search all models</a>
@@ -57,8 +59,8 @@ export async function render(section) {
       <div class="stats">
         <div class="stat"><div class="stat-label">Live ${term('model', 'models')} tracked</div><div class="stat-value">${int(t.live)}</div><div class="stat-sub">from ${int(t.authors)} ${term('publisher', 'publishers')}</div></div>
         <div class="stat"><div class="stat-label">${term('downloads', 'Downloads in the last 30 days')}</div><div class="stat-value">${compact(t.downloads_30d)}</div><div class="stat-sub">across all live models</div></div>
-        <div class="stat"><div class="stat-label">New in the last 7 days</div><div class="stat-value">${int(t.created_7d)}</div><div class="stat-sub">models created on the Hub</div></div>
-        <div class="stat"><div class="stat-label">Allow commercial use</div><div class="stat-value">${pct(t.open_license / t.live)}</div><div class="stat-sub">of live models have an open ${term('license', 'license')}</div></div>
+        <div class="stat"><div class="stat-label">New in the last 7 days</div><div class="stat-value">${int(issueFull ? issueFull.stats.created : t.created_7d)}</div><div class="stat-sub">models created on the Hub${issueFull ? `, ${esc(issueFull.title.replace(/^Last 7 days \(|^Week of |\)$/g, ''))}` : ''}</div></div>
+        <div class="stat"><div class="stat-label">Open source</div><div class="stat-value">${pct(t.open_license / t.live)}</div><div class="stat-sub">of live models allow commercial use; ${pct((t.conditional_license || 0) / t.live)} more under custom ${term('license', 'terms')}</div></div>
       </div>
     </section>
 

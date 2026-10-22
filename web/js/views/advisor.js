@@ -247,7 +247,7 @@ function formHtml() {
           <select id="a-lang" name="lang">${option('', 'Any', state.lang)}${LANGS.map((l) => option(l, language(l), state.lang)).join('')}</select></div>
       </div>
       <div class="checks">
-        <label><input type="checkbox" name="commercial"> I need commercial use</label>
+        <label title="Open-source licenses, plus custom ones such as Llama or Gemma that allow commercial use with conditions"><input type="checkbox" name="commercial"> I need commercial use</label>
         <label><input type="checkbox" name="officialOnly"> Only models from the original labs</label>
         <label><input type="checkbox" name="hideGated"> Hide gated models</label>
         <label><input type="checkbox" name="uncensored"> Include uncensored variants</label>

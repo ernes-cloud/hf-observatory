@@ -1,10 +1,8 @@
 import { load } from '../data.js';
 import { barList, card, columnChart, shareBar } from '../charts.js';
 import { term } from '../glossary.js';
-import { pageHeader, sectionTitle } from '../ui.js';
-import { authorUrl, compact, date, esc, FORMAT_LABEL, hfUrl, int, language, LICENSE_FAMILY, pct, shortDate, task } from '../format.js';
-
-const LF_COLOR = { oss: 'var(--series-1)', unknown: 'var(--axis)', 'non-commercial': 'var(--series-2)' };
+import { coverageNote, pageHeader, sectionTitle } from '../ui.js';
+import { authorUrl, compact, date, esc, FORMAT_LABEL, hfUrl, int, language, LF_COLOR, LF_ORDER, LICENSE_FAMILY, pct, shortDate, task } from '../format.js';
 
 /** A card whose bar list can switch between "models" and "downloads". */
 function metricCard({ title, sub, span = 6, items, labelOf, hrefOf, defaultMetric = 'models', limit = 12, table }) {
@@ -45,10 +43,11 @@ export async function render(section) {
     id: 'h-overview', eyebrow: 'Overview', title: 'The ecosystem at a glance',
     lead: `Who publishes AI models on Hugging Face, what they are for, how big they are and under which terms you can use them.
       Snapshot of ${esc(date(d.meta.snapshot_at))}; ${term('downloads', 'downloads')} cover the last 30 days.`,
+    note: coverageNote(d.meta, { noise: t.noise }),
     takeaways: [
       { value: int(t.live), text: `live ${term('model', 'models')} from ${int(t.authors)} ${term('publisher', 'publishers')}; ${int(t.created_7d)} were created in the last week and ${int(t.removed)} have been deleted so far` },
       { value: topPub ? pct(topPub.downloads / t.downloads_30d) : '–', text: topPub ? `of all downloads go to <strong>${esc(topPub.author)}</strong>, the most downloaded publisher` : '' },
-      { value: pct(t.open_license / t.live), text: `of live models allow commercial use (open ${term('license', 'license')})` },
+      { value: pct(t.open_license / t.live), text: `of live models have an open-source ${term('license', 'license')} that allows commercial use; another ${pct((t.conditional_license || 0) / t.live)} use custom terms such as Llama, Gemma or OpenRAIL` },
       { value: pct(small / knownTotal), text: `of models with a known size have under 4B ${term('parameters', 'parameters')}: small enough for a laptop` },
     ],
     howTo: [
@@ -66,7 +65,7 @@ export async function render(section) {
 
   grid.append(sectionTitle('Who builds and who gets used', 'The organizations behind the most used models'));
   grid.append(metricCard({
-    title: 'Top publishers', sub: 'Ranked by monthly downloads or by number of models published',
+    title: 'Top publishers', sub: 'Ranked by monthly downloads, or by models that people use (100+ downloads or 3+ likes): experiment dumps would lead a raw count',
     items: mergeOrgs(d.top_orgs_by_count, d.top_orgs_by_downloads), labelOf: (o) => o.author, hrefOf: (o) => authorUrl(o.author),
     defaultMetric: 'downloads', limit: 15,
   }));
@@ -104,13 +103,14 @@ export async function render(section) {
 
   // Licenses: part-to-whole + raw licenses
   const licBody = document.createElement('div');
-  licBody.append(shareBar(d.license_families.map((f) => ({ label: LICENSE_FAMILY[f.family]?.label || f.family, value: f.models, color: LF_COLOR[f.family] }))));
+  const lfs = [...d.license_families].sort((a, b) => LF_ORDER.indexOf(a.family) - LF_ORDER.indexOf(b.family));
+  licBody.append(shareBar(lfs.map((f) => ({ label: LICENSE_FAMILY[f.family]?.label || f.family, value: f.models, color: LF_COLOR[f.family] }))));
   const h = document.createElement('h3');
   h.textContent = 'Most common licenses';
   h.style.margin = '16px 0 8px';
   licBody.append(h, barList(d.licenses.slice(0, 10).map((l) => ({ label: l.license, value: l.models }))));
   grid.append(card({
-    title: 'Licenses', sub: 'Open licenses allow commercial use. “Unclear” means missing or ambiguous terms: check before using it in a product.', body: licBody,
+    title: 'Licenses', sub: 'Open source allows commercial use. “Open with conditions” are custom licenses (Llama, Gemma, OpenRAIL…) that usually allow it with conditions: read them. “Not declared” means missing or ambiguous terms.', body: licBody,
     table: { columns: [{ key: 'license', label: 'License' }, { key: 'family', label: 'Class', fmt: (v) => LICENSE_FAMILY[v]?.label || v }, { key: 'models', label: 'Models', num: true, fmt: int }], rows: d.licenses },
   }));
 
@@ -124,7 +124,7 @@ export async function render(section) {
   const weeks = d.created_per_week;
   grid.append(card({
     span: 12, title: 'New models per week',
-    sub: 'By the date each model was created on Hugging Face. Weeks before August 2026 look small because the tracking started then.',
+    sub: `By the date each model was created on Hugging Face, from the week tracking began. Older models are left out: the radar only holds the few it picked up later.`,
     body: columnChart(weeks.map((w) => ({ x: w.week, values: [w.models - w.removed, w.removed] })), {
       series: [{ label: 'Still online' }, { label: 'Since removed' }], xFmt: shortDate, tipTitle: (w) => `Week of ${date(w.x)}`,
     }),

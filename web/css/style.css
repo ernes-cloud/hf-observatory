@@ -660,3 +660,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 8px 0 2p
 .detect-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 0; }
 .detect-row .note { margin: 0; }
 .measured { color: var(--good); font-weight: 600; }
+
+/* What the data covers (Overview, Trends) */
+.coverage { margin: 12px 0 4px; padding: 10px 14px; max-width: 80ch; border-left: 3px solid var(--accent); background: var(--surface-2, var(--surface)); border-radius: 6px; font-size: .88rem; line-height: 1.55; color: var(--ink-2); }
+.coverage a { white-space: nowrap; }
+.kind-list { margin: 12px 0 0; padding-left: 18px; font-size: .85rem; color: var(--ink-2); line-height: 1.5; }
+.kind-list li { margin-bottom: 4px; }

@@ -10,10 +10,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from .common import rows
+from .quality import copy_flag_sql
 
 WINDOWS = (7, 14, 30)
 TOP = 20
 FAMILY_SERIES = 8  # one categorical colour per family; the rest folds into "Other"
+STALE_SNAPSHOTS = 6
 
 
 def parse_ts(s: str) -> datetime:
@@ -41,6 +43,18 @@ def load_history(con, snapshots: list[dict], latest_meta: dict) -> list[dict]:
             "downloads_30d, trending_score, removed, removed_at, created_at, gated, family FROM m"
         )
     con.execute("CREATE OR REPLACE TABLE h AS " + " UNION ALL ".join(parts))
+    # Cached snapshots carry the family and license rules of the day they were built: take the
+    # current family, license class and noise flag from the latest table, and count copied
+    # download figures once.
+    con.execute(f"""
+        CREATE OR REPLACE TABLE h AS
+        SELECT h.* REPLACE (CASE WHEN q.id IS NOT NULL THEN q.family ELSE h.family END AS family,
+                            CASE WHEN q.id IS NOT NULL THEN q.license_family ELSE h.license_family END AS license_family,
+                            CASE WHEN regexp_matches(h.pipeline_tag, '^[a-z0-9]+(-[a-z0-9]+)*$') THEN h.pipeline_tag END
+                                AS pipeline_tag),
+               coalesce(q.noise, false) AS noise,
+               CASE WHEN {copy_flag_sql()} THEN 0 ELSE h.downloads_30d END AS dl
+        FROM h LEFT JOIN (SELECT id, family, license_family, noise FROM m) q USING (id)""")
     for i, s in enumerate(snaps):
         s["index"] = i
     return snaps
@@ -57,27 +71,37 @@ def closest_before(snaps: list[dict], end: int, days: int, tolerance_days: float
     return best
 
 
-def movers(con, old: int, new: int, limit: int = TOP) -> dict:
+FADING_FLOOR = 20_000  # a drop only counts for models that had real traction
+
+
+def movers(con, snaps: list[dict], old: int, new: int, limit: int = TOP) -> dict:
+    # Lists leave out noise (sweeps, CI fixtures, test repos); publisher sums use ``dl``.
     con.execute(f"""
         CREATE OR REPLACE TEMP VIEW pair AS
         SELECT b.id, b.author, b.pipeline_tag AS task, b.family, a.downloads_30d AS old, b.downloads_30d AS new,
                b.downloads_30d - a.downloads_30d AS delta,
-               (b.downloads_30d + 1.0) / (a.downloads_30d + 1.0) AS ratio
+               (b.downloads_30d + 1.0) / (a.downloads_30d + 1.0) AS ratio,
+               a.dl AS old_dl, b.dl AS new_dl, b.noise
         FROM (SELECT * FROM h WHERE s = {new} AND NOT removed) b
         JOIN (SELECT * FROM h WHERE s = {old}) a USING (id)""")
     cols = "id, author, task, family, old, new, delta, ratio"
-    rising = rows(con, f"SELECT {cols} FROM pair WHERE delta > 0 ORDER BY delta DESC LIMIT {limit}")
-    breakout = rows(con, f"""SELECT {cols} FROM pair WHERE new >= 5000 AND old >= 500 AND ratio >= 1.5
+    rising = rows(con, f"SELECT {cols} FROM pair WHERE delta > 0 AND NOT noise ORDER BY delta DESC LIMIT {limit}")
+    breakout = rows(con, f"""SELECT {cols} FROM pair WHERE new >= 5000 AND old >= 500 AND ratio >= 1.5 AND NOT noise
                              ORDER BY ratio DESC LIMIT {limit}""")
-    fading = rows(con, f"SELECT {cols} FROM pair WHERE delta < 0 ORDER BY delta ASC LIMIT {limit}")
+    # Ranked by relative loss: a giant losing 6% of a huge rolling window is noise, not news.
+    fading = rows(con, f"""SELECT {cols} FROM pair WHERE delta < 0 AND old >= {FADING_FLOOR} AND NOT noise
+                           ORDER BY ratio ASC, delta ASC LIMIT {limit}""")
     orgs = rows(con, """
-        SELECT author, sum(old) AS old, sum(new) AS new, sum(new) - sum(old) AS delta, count(*) AS models
+        SELECT author, sum(old_dl) AS old, sum(new_dl) AS new, sum(new_dl) - sum(old_dl) AS delta, count(*) AS models
         FROM pair GROUP BY author""")
     orgs_rising = sorted((o for o in orgs if o["delta"] > 0), key=lambda o: -o["delta"])[:15]
     orgs_fading = sorted((o for o in orgs if o["delta"] < 0), key=lambda o: o["delta"])[:15]
+    # New on the Hub during the window, not merely new to the radar (which also picks up old models).
+    since = parse_ts(snaps[old]["snapshot_at"]).strftime("%Y-%m-%d %H:%M:%S")
     newcomers = rows(con, f"""
         SELECT b.id, b.author, b.pipeline_tag AS task, b.family, b.downloads_30d AS new
-        FROM (SELECT * FROM h WHERE s = {new} AND NOT removed) b
+        FROM (SELECT * FROM h WHERE s = {new} AND NOT removed AND NOT noise
+                                AND created_at > TIMESTAMPTZ '{since}+00') b
         ANTI JOIN (SELECT id FROM h WHERE s = {old}) a USING (id)
         ORDER BY b.downloads_30d DESC LIMIT {limit}""")
     return {"rising": rising, "breakout": breakout, "fading": fading,
@@ -92,15 +116,15 @@ def build(con, snapshots: list[dict], latest_meta: dict) -> tuple[dict, list[dic
     # Ecosystem-wide series
     totals = rows(con, """
         SELECT s, count(*) FILTER (WHERE NOT removed) AS live, count(*) FILTER (WHERE removed) AS removed,
-               sum(downloads_30d) FILTER (WHERE NOT removed) AS downloads
+               sum(dl) FILTER (WHERE NOT removed) AS downloads
         FROM h GROUP BY s ORDER BY s""")
 
     # Family adoption (top families by current downloads; the rest → Other)
     fam_rank = [r["family"] for r in rows(con, f"""
         SELECT family FROM h WHERE s = {last} AND NOT removed AND family IS NOT NULL
-        GROUP BY family ORDER BY sum(downloads_30d) DESC LIMIT {FAMILY_SERIES - 1}""")]
+        GROUP BY family ORDER BY sum(dl) DESC LIMIT {FAMILY_SERIES - 1}""")]
     fam_rows = rows(con, """
-        SELECT s, family, count(*) AS models, sum(downloads_30d) AS downloads
+        SELECT s, family, count(*) FILTER (WHERE NOT noise) AS models, sum(dl) AS downloads
         FROM h WHERE NOT removed AND family IS NOT NULL GROUP BY s, family""")
     families = {f: {"models": [0] * len(snaps), "downloads": [0] * len(snaps)} for f in fam_rank + ["Other"]}
     for r in fam_rows:
@@ -113,14 +137,22 @@ def build(con, snapshots: list[dict], latest_meta: dict) -> tuple[dict, list[dic
         old = closest_before(snaps, last, days)
         if old is None:
             continue
-        windows[str(days)] = {"from": old, "to": last, **movers(con, old, last)}
+        windows[str(days)] = {"from": old, "to": last, **movers(con, snaps, old, last)}
 
     # Series (downloads per snapshot) for every model appearing in a list, plus the current leaders.
     leaders = rows(con, f"""SELECT id, downloads_30d AS downloads, pipeline_tag AS task FROM h
-                            WHERE s = {last} AND NOT removed ORDER BY downloads_30d DESC LIMIT 10""")
-    trending = rows(con, f"""SELECT id, author, pipeline_tag AS task, trending_score AS score, downloads_30d AS downloads
-                             FROM h WHERE s = {last} AND NOT removed AND trending_score > 0
-                             ORDER BY trending_score DESC LIMIT {TOP}""")
+                            WHERE s = {last} AND NOT removed AND NOT noise ORDER BY downloads_30d DESC LIMIT 10""")
+    # The dataset keeps the last known trending score: a score frozen over the last
+    # STALE_SNAPSHOTS snapshots means the model dropped out of the Hub's trending list.
+    first = max(0, last - STALE_SNAPSHOTS + 1)
+    trending = rows(con, f"""
+        WITH recent AS (SELECT id, count(DISTINCT trending_score) AS values, count(*) AS seen FROM h
+                        WHERE s >= {first} GROUP BY id)
+        SELECT id, author, pipeline_tag AS task, trending_score AS score, downloads_30d AS downloads
+        FROM h JOIN recent USING (id)
+        WHERE s = {last} AND NOT removed AND NOT noise AND trending_score > 0
+          AND NOT (values = 1 AND seen >= {STALE_SNAPSHOTS})
+        ORDER BY trending_score DESC LIMIT {TOP}""")
     ids = {m["id"] for m in leaders + trending}
     for w in windows.values():
         for key in ("rising", "breakout", "fading", "newcomers"):

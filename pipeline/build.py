@@ -21,9 +21,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hfo import advisor, finder, graveyard, newsletter, overview, trees, trends  # noqa: E402
+from hfo import advisor, finder, graveyard, newsletter, overview, quality, trees, trends  # noqa: E402
 from hfo.common import connect, write_json  # noqa: E402
-from hfo.sources import REPO, build_history, build_latest, list_versions, log  # noqa: E402
+from hfo.sources import REPO, build_history, build_latest, check_latest, list_versions, log, version_day  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 
@@ -54,6 +54,10 @@ def main(argv: list[str] | None = None) -> None:
 
     con = connect()
     con.execute(f"CREATE TABLE m AS SELECT * FROM '{latest_path.as_posix()}'")
+    check_latest(con, meta, args.cache)
+    meta["quality"] = quality.apply(con, meta["snapshot_at"])
+    meta["tracking_start"] = version_day(0).isoformat()
+    log(f"quality: {meta['quality']}")
 
     out = args.out
     # Per-item files (issues, trees) are regenerated each run; drop stale ones.

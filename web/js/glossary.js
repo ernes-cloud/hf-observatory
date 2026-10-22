@@ -12,7 +12,7 @@ export const GLOSSARY = {
   task: ['Task', 'What the model is for, such as text generation (chatbots), speech recognition or image generation. Declared by the author.'],
   parameters: ['Parameters', 'The number of learned values inside a model, a proxy for its size. “7B” means 7 billion. Bigger models are usually more capable but need more memory.'],
   memory: ['Estimated memory', 'Roughly how much GPU or unified memory you need to load the model: parameters × bytes per parameter (2 for 16-bit, about 1 for 8-bit, about 0.6 for 4-bit and GGUF), plus 15%. Long conversations need more.'],
-  license: ['License', 'The legal terms for using the model. “Open license” means commercial use is allowed (Apache-2.0, MIT…). “Non-commercial” forbids business use. “Unclear” means it is missing or ambiguous: check before using it in a product.'],
+  license: ['License', 'The legal terms for using the model. “Open source” (Apache-2.0, MIT…) allows commercial use. “Open with conditions” are custom licenses such as Llama, Gemma or OpenRAIL that usually allow it with conditions. “Non-commercial” forbids business use. “Not declared” means missing or ambiguous: check before using it in a product.'],
   gated: ['Gated', 'The author requires you to accept terms or request access on Hugging Face before downloading.'],
   removed: ['Removed', 'The model page no longer exists on Hugging Face (it returns a “404 not found”). The dataset keeps a record of it.'],
   gguf: ['GGUF', 'A single-file format for running models locally with llama.cpp, Ollama or LM Studio, usually compressed (quantized) to fit on a laptop.'],

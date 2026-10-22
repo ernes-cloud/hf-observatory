@@ -109,6 +109,47 @@ await checkViewport('mobile', { width: 375, height: 760 }, 'light');
   await ctx.close();
 }
 
+// Connected pages: a finder card opens the model page; publisher, family and compare pages render;
+// the header search jumps to a model; unknown routes fall back to Home.
+{
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  const errs = [];
+  page.on('pageerror', (e) => errs.push(e.message));
+  await page.goto(`${base}#finder`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#f-results .model-card h3 a', { timeout: 20000 });
+  const first = await page.textContent('#f-results .model-card h3 a');
+  await page.click('#f-results .model-card h3 a');
+  await page.waitForSelector('#h-model', { timeout: 20000 });
+  const title = (await page.textContent('#h-model')).trim();
+  if (title !== first.trim()) failures.push(`model page: opened "${title}" from "${first}"`);
+  await page.waitForSelector('#view-model .alt-list, #view-model .card .note', { timeout: 20000 });
+  await page.click('#view-model .hero-actions [data-compare]');
+  const tray = await page.isVisible('#compare-tray');
+  if (!tray) failures.push('compare: tray did not appear after "+ Compare"');
+  const org = title.split('/')[0];
+  await page.goto(`${base}#org?name=${encodeURIComponent(org)}`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#h-org', { timeout: 20000 });
+  const orgModels = await page.$$eval('#view-org .alt-list li', (x) => x.length);
+  if (!orgModels) failures.push(`publisher page: no models listed for ${org}`);
+  await page.goto(`${base}#family?name=Qwen`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#h-family', { timeout: 20000 });
+  await page.goto(`${base}#compare`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#view-compare table', { timeout: 20000 });
+  await page.fill('#site-search-q', first.trim().split('/')[1].slice(0, 12));
+  await page.waitForSelector('#site-search-list li', { timeout: 10000 });
+  const suggestions = await page.$$eval('#site-search-list li', (x) => x.length);
+  await page.fill('#site-search-q', first.trim());
+  await page.press('#site-search-q', 'Enter');
+  await page.waitForFunction(() => location.hash.startsWith('#model'), null, { timeout: 10000 });
+  await page.goto(`${base}#does-not-exist`, { waitUntil: 'networkidle' });
+  const fallback = await page.evaluate(() => location.hash);
+  if (fallback !== '#home') failures.push(`unknown route kept "${fallback}"`);
+  for (const e of errs) failures.push(`connected pages: ${e}`);
+  console.log(`  connected pages: ${first.trim()} → model page, compare tray, ${orgModels} models of ${org}, family, ${suggestions} search suggestions`);
+  await ctx.close();
+}
+
 await browser.close();
 server?.close();
 if (failures.length) {

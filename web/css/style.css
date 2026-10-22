@@ -666,3 +666,52 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 8px 0 2p
 .coverage a { white-space: nowrap; }
 .kind-list { margin: 12px 0 0; padding-left: 18px; font-size: .85rem; color: var(--ink-2); line-height: 1.5; }
 .kind-list li { margin-bottom: 4px; }
+
+/* Links under a finder card: publisher, family, Hub, compare */
+.card-links { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-top: 10px; font-size: .84rem; }
+.btn-small { padding: 3px 10px; font-size: .8rem; min-height: 0; }
+.compare-toggle[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Header search */
+.site-search { position: relative; flex: 1 1 260px; max-width: 420px; margin: 0 12px 0 auto; }
+.site-search input { width: 100%; padding: 7px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--ink); font: inherit; font-size: .9rem; }
+.site-search [role="listbox"] { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; right: 0; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 8px 24px rgb(0 0 0 / .14); max-height: 60vh; overflow: auto; }
+.site-search [role="option"] { display: grid; grid-template-columns: 72px 1fr; gap: 0 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; font-size: .88rem; }
+.site-search [role="option"][aria-selected="true"], .site-search [role="option"]:hover { background: var(--surface-2); }
+.ss-kind { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; padding-top: 2px; }
+.ss-label { overflow-wrap: anywhere; }
+.ss-sub { grid-column: 2; color: var(--muted); font-size: .78rem; }
+@media (max-width: 640px) {
+  .header-row { flex-wrap: wrap; }
+  .site-search { order: 3; flex-basis: 100%; max-width: none; margin: 8px 0 0; }
+}
+
+/* Compare tray */
+.compare-tray { position: fixed; z-index: 25; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; box-shadow: 0 8px 24px rgb(0 0 0 / .18); font-size: .88rem; max-width: calc(100vw - 32px); }
+.compare-table th[scope="row"] { text-align: left; white-space: nowrap; color: var(--ink-2); font-weight: 600; }
+.compare-table thead th { vertical-align: top; text-align: left; min-width: 160px; }
+.compare-actions { display: inline-flex; gap: 8px; align-items: center; margin-top: 4px; }
+
+/* Model, publisher and family pages */
+.model-head h1 { overflow-wrap: anywhere; }
+.model-head .author, .model-head .author a { color: var(--muted); font-weight: 500; }
+.model-head .chips { margin: 8px 0 4px; }
+a.chip { text-decoration: none; }
+.removed-note { border-left-color: var(--series-2); }
+h3.mini { font-size: .9rem; margin: 10px 0 6px; }
+ul.plain { list-style: none; padding: 0; margin: 0 0 8px; }
+ul.plain li { padding: 3px 0; overflow-wrap: anywhere; }
+.alt-list { list-style: none; padding: 0; margin: 0; }
+.alt-list li { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.alt-list .name { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.alt-list small { color: var(--muted); }
+dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+a .author { color: var(--muted); }
+.hub-link { font-size: .78rem; font-weight: 500; margin-left: 6px; }
+.week-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.week-list { margin: 0; padding-left: 20px; }
+.week-list li { padding: 4px 0; overflow-wrap: anywhere; }
+.week-list small { display: block; color: var(--muted); }
+@media (min-width: 900px) { .task-grid > :last-child:nth-child(3n+1) { grid-column: 1 / -1; } }

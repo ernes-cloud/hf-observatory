@@ -1,5 +1,5 @@
 import { load } from '../data.js';
-import { compact, esc, int, pct } from '../format.js';
+import { compact, esc, int, modelLink, pct, task } from '../format.js';
 import { glossaryHtml, term } from '../glossary.js';
 
 const ICONS = {
@@ -81,10 +81,18 @@ export async function render(section) {
 
     ${issue ? `
     <section aria-labelledby="h-week" class="home-block">
-      <h2 id="h-week" class="block-title">This week in one paragraph</h2>
+      <h2 id="h-week" class="block-title">This week</h2>
+      ${issueFull ? `<div class="week-grid">
+        <div class="card"><h3 class="mini">New and worth a look</h3>
+          <ol class="week-list">${issueFull.top_new.slice(0, 5).map((m) => `<li>${modelLink(m.id)}<small>${esc([m.task ? task(m.task) : '', `${compact(m.downloads)} downloads`, `${int(m.likes)} likes`].filter(Boolean).join(' · '))}</small></li>`).join('')}</ol></div>
+        <div class="card"><h3 class="mini">Gaining the most</h3>
+          <ol class="week-list">${(issueFull.rising || []).slice(0, 5).map((m) => `<li>${modelLink(m.id)}<small>${compact(m.old)} → ${compact(m.new)} downloads (+${compact(m.delta)})</small></li>`).join('')}</ol></div>
+        <div class="card"><h3 class="mini">Trending on the Hub now</h3>
+          <ol class="week-list">${(tr?.trending || []).slice(0, 5).map((m) => `<li>${modelLink(m.id)}<small>${esc(task(m.task))} · score ${compact(m.score)}</small></li>`).join('')}</ol></div>
+      </div>` : ''}
       <div class="card week-card">
         <p>${esc(issueFull ? issueFull.intro.join(' ') : issue.summary)}</p>
-        <p class="note">From the newsletter issue “${esc(issue.title)}”. <a href="#newsletter">Read the full summary →</a></p>
+        <p class="note">From the newsletter issue “${esc(issue.title)}”. <a href="#newsletter">Read the full summary →</a> · <a href="#trends">All trends →</a></p>
       </div>
     </section>` : ''}
 

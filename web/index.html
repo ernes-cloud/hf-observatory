@@ -26,6 +26,12 @@
         <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg>
         <span class="brand-text"><span class="brand-name">HF Observatory</span><span class="brand-tag">The Hugging Face model ecosystem, explained</span></span>
       </a>
+      <form class="site-search" id="site-search" role="search" autocomplete="off">
+        <label class="visually-hidden" for="site-search-q">Search models, publishers and families</label>
+        <input type="search" id="site-search-q" placeholder="Search a model, publisher or family" role="combobox"
+          aria-autocomplete="list" aria-expanded="false" aria-controls="site-search-list" spellcheck="false">
+        <ul id="site-search-list" role="listbox" aria-label="Suggestions" hidden></ul>
+      </form>
       <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Theme: system">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18V3z" fill="currentColor"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
         <span class="theme-label">System</span>
@@ -54,7 +60,12 @@
     <section id="view-graveyard" class="view" aria-labelledby="h-graveyard" hidden></section>
     <section id="view-newsletter" class="view" aria-labelledby="h-newsletter" hidden></section>
     <section id="view-about" class="view" aria-labelledby="h-about" hidden></section>
+    <section id="view-model" class="view" aria-labelledby="h-model" hidden></section>
+    <section id="view-org" class="view" aria-labelledby="h-org" hidden></section>
+    <section id="view-family" class="view" aria-labelledby="h-family" hidden></section>
+    <section id="view-compare" class="view" aria-labelledby="h-compare" hidden></section>
   </main>
+  <div class="compare-tray" id="compare-tray" hidden></div>
 
   <footer class="site-footer">
     <div class="wrap">

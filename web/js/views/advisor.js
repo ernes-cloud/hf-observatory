@@ -1,5 +1,5 @@
 import { load } from '../data.js';
-import { compact, esc, hfUrl, int, language, LICENSE_FAMILY, task } from '../format.js';
+import { compact, esc, hfUrl, int, language, LICENSE_FAMILY, modelHref, task } from '../format.js';
 import { GLOSSARY, term } from '../glossary.js';
 import { pageHeader } from '../ui.js';
 import { CPU_MEMORY, GPUS, MAC_CHIPS, PRESETS, RAM_SIZES, UNIFIED, UNIFIED_GROUPS, allGpus, gpuById } from '../advisor/hardware.js';
@@ -440,7 +440,7 @@ function resultCard(r, i) {
     <div class="advice-head">
       <span class="advice-rank">${i + 1}</span>
       <div class="advice-title">
-        <h3><a href="${esc(hfUrl(m.id))}" rel="noopener"><span class="author">${esc(author)}/</span>${esc(rest.join('/'))}</a></h3>
+        <h3><a href="${esc(modelHref(m.id))}"><span class="author">${esc(author)}/</span>${esc(rest.join('/'))}</a> <a class="hub-link" href="${esc(hfUrl(m.id))}" rel="noopener" title="Open on Hugging Face">Hub ↗</a></h3>
         ${dl && dl !== m.id ? `<p class="repo-line">Download: <a href="${esc(hfUrl(dl))}" rel="noopener"><code>${esc(dl)}</code></a> <span class="muted">(${esc(fit.quant)} build of this model)</span></p>` : ''}
         <div class="chips">
           <span class="chip">${esc(task(m.task))}</span>

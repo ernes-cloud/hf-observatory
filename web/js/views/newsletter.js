@@ -1,7 +1,7 @@
 import { load } from '../data.js';
 import { pageHeader } from '../ui.js';
 import { stats } from '../charts.js';
-import { authorUrl, compact, date, esc, hfUrl, int, LICENSE_FAMILY, params as fmtParams, pct, task } from '../format.js';
+import { compact, date, esc, int, LICENSE_FAMILY, modelHref, orgHref, params as fmtParams, pct, task } from '../format.js';
 
 let idx = null;
 let els = null;
@@ -53,7 +53,7 @@ export function update(section, params) {
   if (els && want && want !== els.pick.value && idx.issues.some((i) => i.slug === want)) show(want, false);
 }
 
-const modelLink = (id) => `<a href="${esc(hfUrl(id))}" rel="noopener">${esc(id)}</a>`;
+const modelLink = (id) => `<a href="${esc(modelHref(id))}">${esc(id)}</a>`;
 const meta = (m) => [m.task ? task(m.task) : null, fmtParams(m.parameters ? m.parameters / 1e6 : null)].filter(Boolean).join(', ');
 
 async function show(slug, push) {
@@ -75,9 +75,9 @@ async function show(slug, push) {
     ${block('Notable moves', 'Biggest changes in 30-day downloads among models tracked a week earlier', d.rising.length ? `
       <h3>Gaining</h3><ul>${d.rising.map((m) => `<li>${modelLink(m.id)}: ${compact(m.old)} → ${compact(m.new)} <strong class="delta up">+${compact(m.delta)}</strong></li>`).join('')}</ul>
       ${d.fading.length ? `<h3>Dropping</h3><ul>${d.fading.map((m) => `<li>${modelLink(m.id)}: ${compact(m.old)} → ${compact(m.new)} <strong class="delta down">−${compact(Math.abs(m.delta))}</strong></li>`).join('')}</ul>` : ''}` : '')}
-    ${block('Removals', `Models that started returning 404 during the week${s.removed_cleanup != null ? `. Not listed: ${int(s.removed_cleanup)} experiments nobody used and ${int(s.removed_replaced)} uploads replaced by a newer version` : ''}`, d.removals.length ? `<ul>${d.removals.map((m) => `<li>${esc(m.id)}: ${compact(m.downloads)} downloads before removal${m.gated ? ', gated' : ''}${m.lf === 'unknown' ? ', license not declared' : ''}${m.kind === 'rehosted' && m.successor ? `; the same name is still live at ${modelLink(m.successor)}` : ''}</li>`).join('')}</ul>
+    ${block('Removals', `Models that started returning 404 during the week${s.removed_cleanup != null ? `. Not listed: ${int(s.removed_cleanup)} experiments nobody used and ${int(s.removed_replaced)} uploads replaced by a newer version` : ''}`, d.removals.length ? `<ul>${d.removals.map((m) => `<li>${modelLink(m.id)}: ${compact(m.downloads)} downloads before removal${m.gated ? ', gated' : ''}${m.lf === 'unknown' ? ', license not declared' : ''}${m.kind === 'rehosted' && m.successor ? `; the same name is still live at ${modelLink(m.successor)}` : ''}</li>`).join('')}</ul>
       ${d.removers.length ? `<p>Publishers removing the most: ${d.removers.map((r) => `${esc(r.author)} (${int(r.models)})`).join(', ')}.</p>` : ''}` : '')}
-    ${block('Most active publishers', 'By new models created during the week that drew downloads or likes (experiment sweeps and test uploads left out)', d.publishers.length ? `<ul>${d.publishers.map((p) => `<li><a href="${esc(authorUrl(p.author))}" rel="noopener">${esc(p.author)}</a>: ${int(p.models)} new model${p.models === 1 ? '' : 's'}</li>`).join('')}</ul>` : '')}
+    ${block('Most active publishers', 'By new models created during the week that drew downloads or likes (experiment sweeps and test uploads left out)', d.publishers.length ? `<ul>${d.publishers.map((p) => `<li><a href="${esc(orgHref(p.author))}">${esc(p.author)}</a>: ${int(p.models)} new model${p.models === 1 ? '' : 's'}</li>`).join('')}</ul>` : '')}
     ${block('New models by family and task', '', d.families.length ? `<p>${d.families.map((f) => `${esc(f.family)} ${int(f.models)}`).join(' · ')}</p>${d.tasks.length ? `<p class="note">Top tasks: ${d.tasks.map((t) => `${esc(task(t.task))} ${int(t.models)}`).join(' · ')}</p>` : ''}` : '')}
     <p class="note" style="margin-top:24px">Generated automatically from <a href="https://github.com/686f6c61/radar-huggingface-dataset">radar-huggingface-dataset</a> (CC-BY-4.0).</p>`;
   e.querySelector('#nl-stats').append(stats([

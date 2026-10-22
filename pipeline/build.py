@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hfo import advisor, finder, graveyard, newsletter, overview, quality, trees, trends  # noqa: E402
+from hfo import advisor, finder, graveyard, models, newsletter, overview, quality, trees, trends  # noqa: E402
 from hfo.common import connect, write_json  # noqa: E402
 from hfo.sources import REPO, build_history, build_latest, check_latest, list_versions, log, version_day  # noqa: E402
 
@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> None:
 
     out = args.out
     # Per-item files (issues, trees) are regenerated each run; drop stale ones.
-    for sub in ("newsletter", "families"):
+    for sub in ("newsletter", "families", "models"):
         shutil.rmtree(out / sub, ignore_errors=True)
     sizes = {}
     sizes["overview.json"] = write_json(out / "overview.json", overview.build(con, meta))
@@ -75,6 +75,11 @@ def main(argv: list[str] | None = None) -> None:
     snapshots = [] if args.no_history else build_history(args.cache, args.history_days, args.max_snapshots)
     trend_data, snaps = trends.build(con, snapshots, meta)
     sizes["trends.json"] = write_json(out / "trends.json", trend_data)
+    model_index, shards, search = models.build(con, snaps)
+    sizes["models/index.json"] = write_json(out / "models" / "index.json", model_index)
+    for shard, recs in shards.items():
+        sizes[f"models/{shard:02x}.json"] = write_json(out / "models" / f"{shard:02x}.json", recs)
+    sizes["search.json"] = write_json(out / "search.json", search)
     nl_index, issues, feed = newsletter.build(con, snaps)
     sizes["newsletter/index.json"] = write_json(out / "newsletter" / "index.json", nl_index)
     for slug, issue in issues.items():
@@ -85,10 +90,12 @@ def main(argv: list[str] | None = None) -> None:
     sizes["meta.json"] = write_json(out / "meta.json", meta)
 
     for name, n in sizes.items():
-        if not name.startswith("families/tree-"):
+        if not name.startswith(("families/tree-", "models/")) or name == "models/index.json":
             log(f"wrote {name}: {n / 1024:,.0f} KB")
     trees_kb = sum(n for k, n in sizes.items() if k.startswith("families/tree-")) / 1024
     log(f"wrote {len(tree_files)} family trees: {trees_kb:,.0f} KB")
+    shards_kb = sum(n for k, n in sizes.items() if k.startswith("models/") and k != "models/index.json") / 1024
+    log(f"wrote {len(shards)} model shards: {shards_kb:,.0f} KB")
     log(f"done in {time.time() - t0:,.0f}s")
 
 

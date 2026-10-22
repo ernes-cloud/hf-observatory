@@ -2,7 +2,7 @@ import { load } from '../data.js';
 import { term } from '../glossary.js';
 import { coverageNote, pageHeader } from '../ui.js';
 import { card, lineChart, seriesColor, sparkline, stats } from '../charts.js';
-import { authorUrl, compact, date, esc, hfUrl, int, pct, shortDate, signed, signedPct, task } from '../format.js';
+import { compact, date, esc, familyHref, int, modelHref, orgHref, pct, shortDate, signed, signedPct, task } from '../format.js';
 
 let T = null;
 let windowDays = '7';
@@ -51,8 +51,8 @@ function moverList(items, { from, to, kind = 'delta', empty = 'Nothing to show.'
   return `<ul class="movers">${items.map((m) => {
     const isOrg = !m.id;
     const name = isOrg
-      ? `<a href="${esc(authorUrl(m.author))}" rel="noopener">${esc(m.author)}</a><small>${int(m.models)} models compared</small>`
-      : `<a href="${esc(hfUrl(m.id))}" rel="noopener">${esc(m.id)}</a><small>${esc(task(m.task))}${m.family ? ` · ${esc(m.family)}` : ''}</small>`;
+      ? `<a href="${esc(orgHref(m.author))}">${esc(m.author)}</a><small>${int(m.models)} models compared</small>`
+      : `<a href="${esc(modelHref(m.id))}">${esc(m.id)}</a><small>${esc(task(m.task))}${m.family ? ` · <a href="${esc(familyHref(m.family))}">${esc(m.family)}</a>` : ''}</small>`;
     let value;
     if (kind === 'ratio') value = `<span class="delta up" title="${int(m.old)} → ${int(m.new)}">×${m.ratio < 10 ? m.ratio.toFixed(1) : compact(m.ratio)}<br><small style="font-weight:400;color:var(--muted)">${compact(m.old)} → ${compact(m.new)}</small></span>`;
     else if (kind === 'new') value = `<span class="delta">${compact(m.new)}</span>`;
@@ -154,6 +154,6 @@ function draw(body) {
   const trending = T.trending;
   grid.append(card({
     span: 12, title: 'Trending right now', sub: 'Hugging Face trending score at the latest snapshot (scores frozen for 6+ snapshots are left out); the sparkline shows the score over all snapshots',
-    body: `<ul class="movers">${trending.map((m) => `<li><span class="name"><a href="${esc(hfUrl(m.id))}" rel="noopener">${esc(m.id)}</a><small>${esc(task(m.task))} · ${compact(m.downloads)} downloads</small></span>${sparkline(T.trending_series[m.id] || [], { label: `Trending score history for ${m.id}` })}<span class="delta">${compact(m.score)}</span></li>`).join('')}</ul>`,
+    body: `<ul class="movers">${trending.map((m) => `<li><span class="name"><a href="${esc(modelHref(m.id))}">${esc(m.id)}</a><small>${esc(task(m.task))} · ${compact(m.downloads)} downloads</small></span>${sparkline(T.trending_series[m.id] || [], { label: `Trending score history for ${m.id}` })}<span class="delta">${compact(m.score)}</span></li>`).join('')}</ul>`,
   }));
 }

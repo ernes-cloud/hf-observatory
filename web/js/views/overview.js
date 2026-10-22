@@ -2,7 +2,7 @@ import { load } from '../data.js';
 import { barList, card, columnChart, shareBar } from '../charts.js';
 import { term } from '../glossary.js';
 import { coverageNote, pageHeader, sectionTitle } from '../ui.js';
-import { authorUrl, compact, date, esc, FORMAT_LABEL, hfUrl, int, language, LF_COLOR, LF_ORDER, LICENSE_FAMILY, pct, shortDate, task } from '../format.js';
+import { compact, date, esc, familyHref, finderHref, FORMAT_LABEL, int, language, modelHref, orgHref, LF_COLOR, LF_ORDER, LICENSE_FAMILY, pct, shortDate, task } from '../format.js';
 
 /** A card whose bar list can switch between "models" and "downloads". */
 function metricCard({ title, sub, span = 6, items, labelOf, hrefOf, defaultMetric = 'models', limit = 12, table }) {
@@ -13,7 +13,7 @@ function metricCard({ title, sub, span = 6, items, labelOf, hrefOf, defaultMetri
   const draw = (metric) => {
     const sorted = [...items].sort((a, b) => (b[metric] || 0) - (a[metric] || 0)).slice(0, limit);
     body.replaceChildren(barList(sorted.map((d) => ({
-      label: labelOf(d), value: d[metric] || 0, href: hrefOf?.(d), external: true,
+      label: labelOf(d), value: d[metric] || 0, href: hrefOf?.(d),
       title: `${labelOf(d)}: ${int(d.models)} models · ${int(d.downloads)} downloads (30 days)`,
     })), {}));
   };
@@ -66,24 +66,24 @@ export async function render(section) {
   grid.append(sectionTitle('Who builds and who gets used', 'The organizations behind the most used models'));
   grid.append(metricCard({
     title: 'Top publishers', sub: 'Ranked by monthly downloads, or by models that people use (100+ downloads or 3+ likes): experiment dumps would lead a raw count',
-    items: mergeOrgs(d.top_orgs_by_count, d.top_orgs_by_downloads), labelOf: (o) => o.author, hrefOf: (o) => authorUrl(o.author),
+    items: mergeOrgs(d.top_orgs_by_count, d.top_orgs_by_downloads), labelOf: (o) => o.author, hrefOf: (o) => orgHref(o.author),
     defaultMetric: 'downloads', limit: 15,
   }));
   grid.append(card({
-    title: 'Most downloaded models', sub: 'Last 30 days. Click a name to open it on Hugging Face.',
-    body: barList(d.top_models.map((m) => ({ label: m.id, value: m.downloads, href: hfUrl(m.id), external: true, title: `${m.id} · ${task(m.task)} · ${int(m.downloads)} downloads` }))),
+    title: 'Most downloaded models', sub: 'Last 30 days. Click a name to open its page.',
+    body: barList(d.top_models.map((m) => ({ label: m.id, value: m.downloads, href: modelHref(m.id), title: `${m.id} · ${task(m.task)} · ${int(m.downloads)} downloads` }))),
     table: { columns: [{ key: 'id', label: 'Model' }, { key: 'task', label: 'Task', fmt: task }, { key: 'downloads', label: 'Downloads (30d)', num: true, fmt: int }, { key: 'likes', label: 'Likes', num: true, fmt: int }], rows: d.top_models },
   }));
 
   grid.append(sectionTitle('What the models are for', 'Tasks and model families'));
   grid.append(metricCard({
     title: 'Tasks', sub: `What each model is built to do.${unspecified ? ` ${int(unspecified.models)} models declare no task and are left out.` : ''}`,
-    items: tasksNamed, labelOf: (x) => task(x.task), limit: 15,
+    items: tasksNamed, labelOf: (x) => task(x.task), hrefOf: (x) => finderHref({ task: x.task }), limit: 15,
     table: { columns: [{ key: 'label', label: 'Task' }, { key: 'models', label: 'Models', num: true, fmt: int }, { key: 'downloads', label: 'Downloads (30d)', num: true, fmt: int }], rows: d.tasks.map((x) => ({ ...x, label: task(x.task) })) },
   }));
   grid.append(metricCard({
     title: 'Model families', sub: 'Groups of related models (Qwen, Llama, Gemma…), detected from names and base models. BERT-style are small text-embedding models used for search.', items: d.families,
-    labelOf: (f) => f.family, defaultMetric: 'downloads', limit: 15,
+    labelOf: (f) => f.family, hrefOf: (f) => familyHref(f.family), defaultMetric: 'downloads', limit: 15,
   }));
 
   grid.append(sectionTitle('Size, format and terms of use', 'What you need to run a model and whether you may use it commercially'));
@@ -98,7 +98,7 @@ export async function render(section) {
 
   grid.append(metricCard({
     title: 'File formats', sub: `GGUF and MLX are for running models on your own computer; safetensors is the standard format. ${int(d.no_format)} models have none detected.`,
-    items: d.formats, labelOf: (f) => FORMAT_LABEL[f.format] || f.format,
+    items: d.formats, labelOf: (f) => FORMAT_LABEL[f.format] || f.format, hrefOf: (f) => finderHref({ fmt: f.format }),
   }));
 
   // Licenses: part-to-whole + raw licenses
@@ -116,7 +116,7 @@ export async function render(section) {
 
   grid.append(card({
     title: 'Languages', sub: `Languages declared by the author (top 20). ${int(d.no_language)} models declare none.`,
-    body: barList(d.languages.map((l) => ({ label: language(l.lang), value: l.models }))),
+    body: barList(d.languages.map((l) => ({ label: language(l.lang), value: l.models, href: finderHref({ lang: l.lang }) }))),
     table: { columns: [{ key: 'lang', label: 'Code' }, { key: 'name', label: 'Language' }, { key: 'models', label: 'Models', num: true, fmt: int }], rows: d.languages.map((l) => ({ ...l, name: language(l.lang) })) },
   }));
 

@@ -2,7 +2,7 @@ import { load } from '../data.js';
 import { term } from '../glossary.js';
 import { pageHeader } from '../ui.js';
 import { barList, card, columnChart, shareBar, stats, tableHtml } from '../charts.js';
-import { authorUrl, compact, hfUrl, date, days, esc, int, LF_COLOR, LF_ORDER, LICENSE_FAMILY, params as fmtParams, pct, REMOVAL_KIND, shortDate, task } from '../format.js';
+import { compact, modelHref, orgHref, date, days, esc, int, LF_COLOR, LF_ORDER, LICENSE_FAMILY, params as fmtParams, pct, REMOVAL_KIND, shortDate, task } from '../format.js';
 
 const KIND_COLOR = { removed: 'var(--series-2)', replaced: 'var(--series-1)', rehosted: 'var(--series-3)', cleanup: 'var(--axis)' };
 const PAGE = 50;
@@ -26,7 +26,7 @@ export async function render(section) {
       'Removal dates are when the dataset noticed the model was gone, not the exact moment it was deleted.',
       'Downloads and likes are the last values seen before the model disappeared.',
       '<strong>What happened</strong> is inferred from the data: a near-identical name from the same publisher means the model was <em>replaced</em>; the same name live under another account means a mirror, a re-upload or the original lives on.',
-      'The full list at the bottom can be searched and sorted. Removed models have no working link, so names are not clickable.',
+      'The full list at the bottom can be searched and sorted. Names open the last record the radar kept; the Hub page itself is gone.',
     ],
   }));
 
@@ -46,7 +46,7 @@ export async function render(section) {
   grid.append(card({
     title: 'Who removes the most', sub: 'Publishers by number of removed models (bar) and share of their tracked models',
     body: barList(g.by_author.map((a) => ({
-      label: a.author, value: a.removed, href: authorUrl(a.author), external: true,
+      label: a.author, value: a.removed, href: orgHref(a.author),
       display: `${int(a.removed)} · ${pct(a.removed / a.tracked)}`,
       title: `${a.author}: ${int(a.removed)} of ${int(a.tracked)} tracked models removed`,
     }))),
@@ -111,7 +111,7 @@ export async function render(section) {
   const list = document.createElement('article');
   list.className = 'card span-12';
   list.innerHTML = `
-    <div class="card-head"><div><h2>Every removed model</h2><p class="sub">Downloads and likes are the last values seen before removal. Links are gone, so models are not linked.</p></div></div>
+    <div class="card-head"><div><h2>Every removed model</h2><p class="sub">Downloads and likes are the last values seen before removal. Each name opens what the radar kept about the model.</p></div></div>
     <div class="filters" style="margin-bottom:10px">
       <div class="field"><label for="g-q">Search</label><input type="search" id="g-q" placeholder="Model or publisher" autocomplete="off"></div>
       <div class="field"><label for="g-kind">What happened</label><select id="g-kind"><option value="">Any</option>
@@ -131,11 +131,11 @@ export async function render(section) {
   const tableEl = list.querySelector('#g-table'), countEl = list.querySelector('#g-count'), more = list.querySelector('#g-more');
   let shown = PAGE, filtered = all;
   const columns = [
-    { key: 'id', label: 'Model', html: (v) => `<span class="id">${esc(v)}</span>` },
+    { key: 'id', label: 'Model', html: (v) => `<a class="id" href="${esc(modelHref(v))}">${esc(v)}</a>` },
     { key: 'task', label: 'Task', fmt: (v) => (v ? task(v) : '–') },
     { key: 'params', label: 'Size', num: true, fmt: (v) => fmtParams(v) || '–' },
     { key: 'lf', label: 'License', fmt: (v, r) => r.license || LICENSE_FAMILY[v]?.label },
-    { key: 'kind', label: 'What happened', html: (v, r) => (v ? `<span title="${esc(REMOVAL_KIND[v]?.long || '')}">${esc(REMOVAL_KIND[v]?.label || v)}</span>${r.successor ? `<br><a class="note" href="${esc(hfUrl(r.successor))}" target="_blank" rel="noopener">${esc(r.successor)}</a>` : ''}` : '–') },
+    { key: 'kind', label: 'What happened', html: (v, r) => (v ? `<span title="${esc(REMOVAL_KIND[v]?.long || '')}">${esc(REMOVAL_KIND[v]?.label || v)}</span>${r.successor ? `<br><a class="note" href="${esc(modelHref(r.successor))}">${esc(r.successor)}</a>` : ''}` : '–') },
     { key: 'gated', label: 'Gated', fmt: (v) => (v ? 'Yes' : '') },
     { key: 'created', label: 'Created', num: true, fmt: date },
     { key: 'removed_at', label: 'Removed', num: true, fmt: date },
